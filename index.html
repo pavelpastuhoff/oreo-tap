@@ -1,0 +1,3072 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>ОРЕО — Тапалка & Экосистема</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+  html, body { margin: 0; height: 100%; overflow: hidden; touch-action: manipulation; }
+  body {
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    color: #fff;
+    background: radial-gradient(circle at 50% 55%, #2b3a7a 0%, #141a3d 55%, #070919 100%);
+  }
+
+  /* Камера пользователя на фоне с необычными фильтрами */
+  #camWrap {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+    opacity: 0; transition: opacity .35s ease;
+  }
+  #camWrap.active { opacity: 0.62; }
+  #camVideo {
+    width: 100%; height: 100%; object-fit: cover;
+    transform: scaleX(-1);
+    will-change: filter, transform;
+    transition: transform 0.08s ease-out;
+  }
+  #camOverlay {
+    position: absolute; inset: 0;
+    background: radial-gradient(circle at 50% 52%, transparent 25%, rgba(8, 10, 28, 0.78) 90%);
+    mix-blend-mode: multiply;
+  }
+
+  .glow {
+    position: fixed; left: 50%; top: 54%; width: 115vmin; height: 115vmin;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(circle, var(--glow-color, rgba(120,150,255,.38)), transparent 62%);
+    transition: opacity .15s, background .35s; pointer-events: none; z-index: 1;
+  }
+
+  /* ===== Мобильный интерфейс в стиле тапалок ===== */
+  :root { --safe-top: env(safe-area-inset-top, 0px); --foot: 50px; }
+
+  /* Верхняя панель: профиль, стрик, кристаллы */
+  .top-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 22;
+    padding: calc(var(--safe-top) + 10px) 12px 0;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .profile {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+    padding: 5px 12px 5px 5px; border-radius: 99px; cursor: pointer;
+    background: rgba(15, 20, 50, .82); border: 1px solid rgba(255,255,255,.15);
+    backdrop-filter: blur(8px);
+  }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #ffe58a, #ff9a2e);
+  }
+  .profile .meta { min-width: 0; line-height: 1.2; }
+  .profile .meta b { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .profile .meta small { font-size: 11px; opacity: .72; font-weight: 700; }
+  .pill-btn {
+    display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+    height: 42px; padding: 0 12px; border-radius: 99px; border: 1px solid rgba(255,255,255,.18);
+    background: rgba(15, 20, 50, .82); color: #fff; font: 800 15px inherit;
+    cursor: pointer; backdrop-filter: blur(8px); transition: transform .12s;
+  }
+  .pill-btn:active { transform: scale(.93); }
+  .pill-btn.streak-pill { background: linear-gradient(135deg, rgba(255,105,30,.35), rgba(255,180,30,.25)); border-color: rgba(255,150,50,.6); color: #ffd78a; }
+  .pill-btn.gem-pill { color: #7ce8ff; border-color: rgba(124,232,255,.45); }
+  .pill-btn .plus { background: #7ce8ff; color: #04202a; width: 20px; height: 20px; border-radius: 50%; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+
+  /* Главный счётчик */
+  .hud {
+    position: fixed; top: calc(var(--safe-top) + 66px); left: 0; right: 0;
+    text-align: center; pointer-events: none; z-index: 5;
+  }
+  .big { display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .big .coin { font-size: clamp(34px, 10vw, 54px); filter: drop-shadow(0 3px 8px rgba(255,190,50,.5)); }
+  #count {
+    font-size: clamp(32px, 10.5vw, 56px); font-weight: 900; line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+    background: linear-gradient(180deg, #fff, #ffd76a);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 4px 14px rgba(255,195,70,.42));
+    display: inline-block; will-change: transform;
+  }
+  .stats { display: flex; justify-content: center; gap: 8px; margin-top: 6px; }
+  .stat {
+    padding: 5px 12px; border-radius: 99px; font-size: 13px; font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    background: rgba(255,255,255,.09); border: 1px solid rgba(255,255,255,.13);
+  }
+  .bar { width: min(300px, 78vw); height: 8px; margin: 10px auto 0; border-radius: 9px; background: rgba(255,255,255,.14); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #6f8cff, #ffd76a); transition: width .25s; }
+
+  /* Боковые круглые кнопки */
+  .side { position: fixed; top: calc(var(--safe-top) + 172px); z-index: 20; display: flex; flex-direction: column; gap: 10px; }
+  .side.left { left: 12px; }
+  .side.right { right: 12px; }
+  .round-btn {
+    width: 48px; height: 48px; border-radius: 16px; border: 1px solid rgba(255,255,255,.18);
+    background: rgba(15, 20, 50, .82); color: #fff; font-size: 22px; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1;
+    backdrop-filter: blur(8px); transition: transform .12s, background .2s, border-color .2s;
+  }
+  .round-btn small { font-size: 10px; font-weight: 800; color: #ffd76a; margin-top: 2px; }
+  .round-btn:active { transform: scale(.92); }
+  .round-btn.active { border-color: #ffd76a; background: rgba(255, 215, 106, .22); }
+  .hide { display: none; }
+
+  /* Энергия над меню */
+  .energy-dock {
+    position: fixed; left: 12px; right: 12px; bottom: calc(var(--foot) + 76px); z-index: 18;
+    display: flex; align-items: center; gap: 8px; max-width: 560px; margin: 0 auto;
+  }
+  .energy {
+    flex: 1; display: flex; align-items: center; gap: 8px; cursor: pointer;
+    padding: 7px 12px; border-radius: 16px; font-weight: 800; font-size: 14px;
+    background: rgba(15, 20, 50, .82); border: 1px solid rgba(255,255,255,.15); backdrop-filter: blur(8px);
+  }
+  .energy .bar { flex: 1; margin: 0; height: 10px; width: auto; }
+  .energy-bar i { background: linear-gradient(90deg, #00e676, #ffee58); }
+  .energy .e-plus { background: linear-gradient(180deg, #ffe58a, #ffb830); color: #1b1400; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .boost-chip {
+    padding: 9px 12px; border-radius: 14px; font-size: 13px; font-weight: 900; white-space: nowrap;
+    background: rgba(255, 215, 106, .18); border: 1px solid #ffd76a; color: #ffd76a;
+  }
+
+  /* Сцена и 3D печенька ОРЕО */
+  #stage {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    perspective: 900px; cursor: pointer; z-index: 2;
+    padding-top: calc(var(--safe-top) + 210px); padding-bottom: calc(var(--foot) + 130px);
+  }
+  :root { --size: min(68vw, 34vh, 330px); }
+  #wrap { width: var(--size); height: var(--size); transform-style: preserve-3d; will-change: transform; }
+  #cookie { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; }
+  .layer {
+    position: absolute; inset: 0; border-radius: 50%;
+    backface-visibility: hidden;
+  }
+  .wafer { background: #2a1710; }
+  .wafer.edge { background: radial-gradient(circle at 50% 50%, #3a2218 0%, #1d0f0a 100%); }
+  .cream { inset: 5%; background: #f6f1e4; }
+  .cream.mid { background: #fff9ea; }
+  .top { background: radial-gradient(circle at 35% 30%, #4a2d20 0%, #2a1710 55%, #1a0d08 100%); overflow: hidden; }
+  .top svg { width: 100%; height: 100%; display: block; }
+
+  .pop {
+    position: fixed; z-index: 15; pointer-events: none; font-weight: 900;
+    font-size: clamp(26px, 6.5vmin, 46px); color: #fff;
+    text-shadow: 0 3px 0 #5a6cff, 0 6px 18px rgba(80,110,255,.8);
+    will-change: transform, opacity;
+  }
+  .spark {
+    position: fixed; z-index: 14; pointer-events: none; width: 8px; height: 8px; border-radius: 50%;
+    background: #fff4d6; box-shadow: 0 0 8px #fff4d6; will-change: transform, opacity;
+  }
+
+  /* Нижнее меню (поднято над подвалом, чтобы плашка Netlify ничего не закрывала) */
+  .footer-strip {
+    position: fixed; left: 0; right: 0; bottom: 0; height: var(--foot); z-index: 24;
+    display: flex; align-items: center; padding: 0 16px;
+    background: linear-gradient(180deg, rgba(7,9,25,0), rgba(7,9,25,.96) 55%);
+    font-weight: 900; letter-spacing: 2px; font-size: 13px; color: rgba(255,255,255,.35); pointer-events: none;
+  }
+  .bottom-nav {
+    position: fixed; left: 8px; right: 8px; bottom: calc(var(--foot) + 4px); z-index: 25;
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px;
+    max-width: 620px; margin: 0 auto;
+    padding: 6px 5px; border-radius: 22px;
+    background: rgba(14, 18, 46, .94); border: 1px solid rgba(255,255,255,.15);
+    backdrop-filter: blur(12px); box-shadow: 0 8px 28px rgba(0,0,0,.5);
+  }
+  .nav-btn {
+    border: 0; background: transparent; color: rgba(255,255,255,.7);
+    padding: 7px 0 5px; border-radius: 15px; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    font: 800 9.5px inherit; position: relative; transition: background .18s, color .18s, transform .12s;
+  }
+  .nav-btn i { font-style: normal; font-size: 22px; line-height: 1; }
+  .nav-btn:active { transform: scale(.92); }
+  .nav-btn.active { background: rgba(255,215,106,.18); color: #ffd76a; }
+  .nav-badge {
+    position: absolute; top: 2px; right: 8px; min-width: 16px; height: 16px;
+    padding: 0 4px; border-radius: 99px; background: #ff3b5c; color: #fff;
+    font-size: 10px; font-weight: 900; display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Выдвижная панель (Drawer) для разделов */
+  #drawer {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 35;
+    max-height: 80vh; overflow-y: auto;
+    padding: 16px 14px 80px; border-radius: 26px 26px 0 0;
+    background: rgba(14, 18, 46, .97); border-top: 1px solid rgba(255,255,255,.18);
+    transform: translateY(105%); transition: transform .32s cubic-bezier(.2,.9,.3,1);
+    backdrop-filter: blur(14px);
+  }
+  #drawer.open { transform: none; }
+  .drawer-head {
+    display: flex; justify-content: space-between; align-items: center;
+    max-width: 540px; margin: 0 auto 14px; font-weight: 900; font-size: 19px;
+  }
+  .drawer-head button {
+    border: 0; background: rgba(255,255,255,.12); color: #fff;
+    width: 34px; height: 34px; border-radius: 50%; font-size: 17px; cursor: pointer;
+  }
+  .drawer-body { max-width: 540px; margin: 0 auto; }
+
+  /* Карточки элементов внутри панели */
+  .card {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 10px; padding: 12px 14px; border-radius: 16px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+    transition: transform .12s, background .2s, border-color .2s;
+  }
+  .card.clickable { cursor: pointer; }
+  .card.clickable:active { transform: scale(.98); }
+  .card.gold-border { border-color: rgba(255,215,106,.55); background: linear-gradient(135deg, rgba(255,205,70,.13), rgba(255,140,30,.06)); }
+  .card.no { opacity: .48; }
+  .card .ic { font-size: 28px; width: 42px; text-align: center; flex-shrink: 0; }
+  .card .tx { flex: 1; min-width: 0; }
+  .card .tx b { display: block; font-size: 15px; margin-bottom: 2px; }
+  .card .tx span { display: block; font-size: 12.5px; opacity: .72; line-height: 1.35; }
+  .card .act {
+    font-weight: 800; font-size: 13px; color: #1b1400;
+    background: linear-gradient(180deg, #ffe58a, #ffb830);
+    padding: 8px 13px; border-radius: 12px; border: 0; cursor: pointer; white-space: nowrap;
+  }
+  .card .act.secondary {
+    background: rgba(255,255,255,.14); color: #fff;
+  }
+  .card .act.free {
+    background: linear-gradient(180deg, #69f0ae, #00c853); color: #04210f;
+  }
+
+  .section-title {
+    font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px;
+    color: #9fb4ff; margin: 16px 0 8px;
+  }
+
+  /* Шкала Duolingo-стрика */
+  .streak-grid {
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 10px 0 14px;
+  }
+  .streak-day {
+    padding: 8px 4px; border-radius: 12px; text-align: center;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+    font-size: 11px; font-weight: 700;
+  }
+  .streak-day.done {
+    background: linear-gradient(180deg, rgba(255,140,30,.35), rgba(255,80,20,.2));
+    border-color: #ff9838; color: #ffe08a;
+  }
+  .streak-day.today {
+    border: 2px solid #ffd76a; box-shadow: 0 0 12px rgba(255,215,106,.35);
+  }
+  .streak-day i { display: block; font-style: normal; font-size: 16px; margin-bottom: 3px; }
+
+  /* Сетка скинов */
+  .skin-badge {
+    display: inline-block; padding: 2px 7px; border-radius: 6px; font-size: 10px; font-weight: 800;
+    margin-left: 6px; vertical-align: middle;
+  }
+  .rarity-common { background: rgba(255,255,255,.15); color: #fff; }
+  .rarity-rare { background: rgba(64,196,255,.25); color: #80d8ff; }
+  .rarity-epic { background: rgba(213,0,249,.28); color: #ea80fc; }
+  .rarity-legend { background: rgba(255,215,64,.3); color: #ffd740; }
+  .rarity-mythic { background: linear-gradient(90deg, #ff4081, #7c4dff); color: #fff; }
+
+  /* Поле реферальной ссылки */
+  .ref-box {
+    background: rgba(0,0,0,.35); border: 1px dashed rgba(255,215,106,.5);
+    border-radius: 14px; padding: 12px; margin-bottom: 12px;
+  }
+  .ref-url {
+    font-family: monospace; font-size: 12.5px; color: #ffe58a;
+    word-break: break-all; padding: 8px 10px; background: rgba(255,255,255,.06);
+    border-radius: 8px; margin: 6px 0 10px; user-select: text; -webkit-user-select: text;
+  }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .btn-row button { flex: 1; min-width: 130px; }
+
+  /* Модальное окно (Закончилась энергия / Выпадение из кейса / Сгорел стрик) */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 60;
+    background: rgba(5, 8, 22, .84); backdrop-filter: blur(8px);
+    display: none; align-items: center; justify-content: center; padding: 16px 16px 64px;
+  }
+  .modal-backdrop.show { display: flex; }
+  .modal-card {
+    width: 100%; max-width: 400px; border-radius: 24px; padding: 22px 18px;
+    background: linear-gradient(180deg, #1d2559, #101538);
+    border: 1px solid rgba(255,215,106,.4); text-align: center;
+    box-shadow: 0 16px 50px rgba(0,0,0,.65);
+  }
+  .modal-card h3 { margin: 6px 0 8px; font-size: 22px; }
+  .modal-card p { margin: 0 0 16px; font-size: 14px; opacity: .85; line-height: 1.45; }
+  .modal-btn {
+    display: block; width: 100%; padding: 12px 16px; margin-bottom: 8px;
+    border-radius: 14px; border: 0; font: 800 14px inherit; cursor: pointer;
+  }
+  .modal-btn.primary {
+    background: linear-gradient(180deg, #ffe58a, #ffb300); color: #1a1200;
+  }
+  .modal-btn.ad {
+    background: linear-gradient(180deg, #69f0ae, #00c853); color: #052210;
+  }
+  .modal-btn.ghost {
+    background: rgba(255,255,255,.1); color: #fff;
+  }
+
+  .toast {
+    position: fixed; left: 50%; top: 18%; z-index: 70; transform: translateX(-50%); pointer-events: none;
+    font-size: clamp(18px, 4.5vmin, 30px); font-weight: 900; text-align: center;
+    padding: 8px 18px; border-radius: 99px; background: rgba(12,16,40,.9);
+    border: 1px solid rgba(255,215,106,.45);
+    text-shadow: 0 3px 14px rgba(255,215,106,.6); color: #ffe58a;
+  }
+  .flash { position: fixed; inset: 0; z-index: 34; pointer-events: none; background: #fff; mix-blend-mode: overlay; }
+
+  /* ===== Вкладки: общие элементы ===== */
+  .wallet { display: flex; gap: 8px; margin-bottom: 12px; }
+  .w-chip { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 9px; border-radius: 14px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); font-size: 17px; }
+  .w-chip b { font-weight: 900; }
+  .w-chip.gem { color: #7ce8ff; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .sec { font-size: 13px; font-weight: 900; letter-spacing: 1px; color: #9fb4ff; margin: 14px 2px 8px; }
+  .pips { flex: 1; width: 100%; height: 7px; border-radius: 9px; background: rgba(255,255,255,.14); overflow: hidden; }
+  .pips i { display: block; height: 100%; background: linear-gradient(90deg, #6f8cff, #ffd76a); border-radius: 9px; transition: width .3s; }
+  .pips.big { height: 10px; }
+  .seg { display: flex; padding: 4px; border-radius: 16px; background: rgba(255,255,255,.07); margin-bottom: 4px; }
+  .seg button { flex: 1; border: 0; background: transparent; color: rgba(255,255,255,.7); padding: 10px; border-radius: 12px; font: 800 14px inherit; cursor: pointer; }
+  .seg button.on { background: linear-gradient(180deg, #ffe58a, #ffb830); color: #1b1400; }
+  .seg .cnt { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 99px; background: rgba(0,0,0,.28); color: #fff; font-size: 12px; }
+
+  /* Плитки (прокачка, магазин) */
+  .tile { position: relative; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 16px 8px 10px; border-radius: 20px; cursor: pointer; background: linear-gradient(180deg, rgba(255,255,255,.1), rgba(255,255,255,.04)); border: 1px solid rgba(255,255,255,.13); transition: transform .12s; }
+  .tile:active { transform: scale(.96); }
+  .tile .t-ic { font-size: 38px; line-height: 1; }
+  .tile b { font-size: 13.5px; }
+  .tile small { font-size: 11.5px; opacity: .72; min-height: 14px; }
+  .tile .t-btn { margin-top: 2px; width: 100%; padding: 8px 6px; border-radius: 12px; font-weight: 900; font-size: 13px; background: linear-gradient(180deg, #ffe58a, #ffb830); color: #1b1400; }
+  .tile.no { opacity: .6; }
+  .tile.no .t-btn { background: rgba(255,255,255,.14); color: #fff; }
+  .tile.maxed .t-btn { background: linear-gradient(180deg, #69f0ae, #00c853); color: #04210f; }
+  .tile .t-lv { position: absolute; top: 8px; right: 8px; font-size: 10.5px; font-weight: 900; background: rgba(0,0,0,.35); border-radius: 99px; padding: 2px 8px; }
+
+  /* Кейсы */
+  @keyframes floaty { 0%,100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-6px) rotate(3deg); } }
+  @keyframes shine { 0% { left: -60%; } 60%,100% { left: 140%; } }
+  @keyframes pulseBtn { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  @keyframes spinR { to { transform: rotate(360deg); } }
+  @keyframes popIn { 0% { transform: scale(0) rotate(-40deg); } 100% { transform: none; } }
+  .case-tile { position: relative; overflow: hidden; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 14px 8px 10px; border-radius: 22px; cursor: pointer; color: #fff; background: linear-gradient(160deg, var(--c1), var(--c2)); box-shadow: 0 8px 20px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.25); text-shadow: 0 2px 4px rgba(0,0,0,.35); transition: transform .12s; }
+  .case-tile:active { transform: scale(.96); }
+  .case-tile .shine { position: absolute; top: 0; left: -60%; width: 40%; height: 100%; background: linear-gradient(100deg, transparent, rgba(255,255,255,.38), transparent); animation: shine 3.4s ease-in-out infinite; pointer-events: none; }
+  .case-tile .chest { font-size: 54px; line-height: 1; animation: floaty 2.6s ease-in-out infinite; filter: drop-shadow(0 6px 8px rgba(0,0,0,.4)); }
+  .case-tile .ct-mid { text-align: center; }
+  .case-tile .ct-mid b { display: block; font-size: 14px; }
+  .case-tile .drops { font-size: 15px; letter-spacing: 2px; margin-top: 2px; }
+  .case-tile .c-btn { width: 100%; padding: 8px 6px; border-radius: 12px; text-align: center; font-weight: 900; font-size: 13px; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.25); }
+  .case-tile.free .c-btn { background: #fff; color: #065f2f; text-shadow: none; animation: pulseBtn 1.4s infinite; }
+  .case-tile.done { filter: grayscale(.85) brightness(.7); }
+  .case-tile.done .chest, .case-tile.done .shine, .case-tile.done .c-btn { animation: none; }
+  .case-tile.wide { grid-column: 1 / -1; flex-direction: row; padding: 14px 16px; gap: 14px; }
+  .case-tile.wide .chest { font-size: 64px; }
+  .case-tile.wide .ct-mid { flex: 1; text-align: left; }
+  .case-tile.wide .ct-mid b { font-size: 18px; }
+  .case-tile.wide .c-btn { width: auto; padding: 10px 12px; }
+
+  .pv-chest { font-size: 76px; line-height: 1; display: inline-block; animation: floaty 2.6s ease-in-out infinite; filter: drop-shadow(0 10px 14px rgba(0,0,0,.5)); }
+  .pv-chest.small { font-size: 44px; }
+  .pv-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 10px 0 16px; }
+  .pv-item { width: 78px; padding: 8px 4px; border-radius: 14px; border: 2px solid var(--rc); background: rgba(255,255,255,.06); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .pv-item b { font-size: 14px; }
+  .pv-item small { font-size: 10.5px; opacity: .7; }
+
+  .roulette { position: relative; overflow: hidden; border-radius: 18px; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.18); padding: 14px 0; margin: 10px 0 6px; }
+  .roulette::before, .roulette::after { content: ''; position: absolute; top: 0; bottom: 0; width: 46px; z-index: 2; pointer-events: none; }
+  .roulette::before { left: 0; background: linear-gradient(90deg, #101538, transparent); }
+  .roulette::after { right: 0; background: linear-gradient(270deg, #101538, transparent); }
+  .rl-marker { position: absolute; left: 50%; top: 0; bottom: 0; width: 4px; margin-left: -2px; background: #ffd76a; box-shadow: 0 0 14px #ffd76a; z-index: 3; }
+  .rl-strip { display: flex; gap: 8px; will-change: transform; }
+  .rl-item { flex: 0 0 96px; height: 96px; border-radius: 16px; border: 2px solid var(--rc); background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--rc) 35%, transparent), rgba(255,255,255,.05) 75%); display: flex; align-items: center; justify-content: center; }
+
+  .win-burst { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 160px; height: 160px; }
+  .win-rays { position: absolute; inset: -24px; background: repeating-conic-gradient(var(--rc) 0 8deg, transparent 8deg 24deg); -webkit-mask-image: radial-gradient(circle, #000 25%, transparent 68%); mask-image: radial-gradient(circle, #000 25%, transparent 68%); opacity: .5; animation: spinR 9s linear infinite; }
+  .win-burst .mini { position: relative; animation: popIn .6s cubic-bezier(.2,1.4,.4,1); filter: drop-shadow(0 0 16px var(--rc)); }
+  .win-stats { display: flex; gap: 8px; justify-content: center; margin: 6px 0 14px; font-weight: 900; font-size: 14px; }
+  .win-stats span { padding: 6px 12px; border-radius: 99px; background: rgba(255,255,255,.1); }
+  .confetti { position: fixed; z-index: 90; width: 8px; height: 12px; pointer-events: none; }
+
+  /* Коллекция скинов */
+  .skin-cell { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 4px 8px; border-radius: 18px; cursor: pointer; text-align: center; border: 2px solid var(--rc); background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--rc) 26%, transparent), rgba(255,255,255,.04) 72%); }
+  .skin-cell b { font-size: 11px; line-height: 1.2; min-height: 26px; display: flex; align-items: center; }
+  .skin-cell .x { font-size: 11px; font-weight: 900; color: #ffd76a; }
+  .skin-cell .cnt { position: absolute; top: 6px; right: 6px; font-size: 11px; font-weight: 900; background: rgba(0,0,0,.45); border-radius: 99px; padding: 1px 7px; }
+  .skin-cell.locked { border-style: dashed; opacity: .7; }
+  .skin-cell.locked .mini { filter: grayscale(1) brightness(.45); }
+  .skin-cell.on { box-shadow: 0 0 0 2px #69f0ae, 0 0 16px rgba(105,240,174,.5); }
+  .skin-cell.on::after { content: '✓'; position: absolute; top: 6px; left: 6px; width: 20px; height: 20px; border-radius: 50%; background: #00c853; color: #04210f; font-weight: 900; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+
+  /* Стрик и задания */
+  .streak-hero { position: relative; display: flex; flex-direction: column; align-items: center; padding: 16px 12px 12px; border-radius: 24px; margin-bottom: 10px; background: radial-gradient(circle at 50% 0%, rgba(255,140,40,.45), rgba(255,80,20,.08) 70%), rgba(255,255,255,.05); border: 1px solid rgba(255,150,50,.5); }
+  .flame { font-size: 58px; line-height: 1; animation: floaty 1.8s ease-in-out infinite; filter: drop-shadow(0 6px 12px rgba(255,120,30,.6)); }
+  .s-num { font-size: 46px; font-weight: 900; color: #ffd78a; line-height: 1; }
+  .s-sub { opacity: .7; font-size: 13px; }
+  .shield { position: absolute; top: 12px; right: 12px; padding: 5px 10px; border-radius: 99px; background: rgba(124,232,255,.15); border: 1px solid rgba(124,232,255,.4); font-weight: 900; font-size: 13px; }
+  .days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; margin-top: 12px; width: 100%; }
+  .day { padding: 7px 0; border-radius: 12px; text-align: center; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.1); }
+  .day i { display: block; font-style: normal; font-size: 18px; }
+  .day small { font-size: 10px; font-weight: 800; opacity: .75; }
+  .day.done { background: linear-gradient(180deg, rgba(255,140,30,.4), rgba(255,80,20,.2)); border-color: #ff9838; }
+  .day.today { border: 2px solid #ffd76a; box-shadow: 0 0 12px rgba(255,215,106,.45); }
+  .warn { margin-bottom: 12px; padding: 8px 12px; border-radius: 12px; background: rgba(255,59,92,.14); border: 1px solid rgba(255,59,92,.4); font-size: 12px; font-weight: 700; text-align: center; }
+  .quest { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 8px; border-radius: 18px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1); }
+  .quest.ready { border-color: #69f0ae; background: rgba(105,240,174,.1); }
+  .quest.claimed { opacity: .5; }
+  .q-ic { font-size: 26px; width: 44px; height: 44px; border-radius: 14px; background: rgba(255,255,255,.1); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .q-body { flex: 1; min-width: 0; }
+  .q-body b { font-size: 14px; display: block; }
+  .q-body small { display: block; font-size: 11.5px; opacity: .65; margin: 1px 0 5px; }
+  .q-row { display: flex; align-items: center; gap: 8px; }
+  .q-n { font-size: 11px; font-weight: 800; opacity: .8; white-space: nowrap; }
+  .q-rew { font-size: 12px; font-weight: 900; color: #ffd76a; text-align: right; white-space: nowrap; line-height: 1.35; }
+  .q-btn { width: 40px; height: 40px; border-radius: 12px; border: 0; font-size: 18px; cursor: pointer; background: rgba(255,255,255,.12); color: #fff; flex-shrink: 0; }
+  .q-btn.go { background: linear-gradient(180deg, #69f0ae, #00c853); animation: pulseBtn 1.2s infinite; }
+
+  /* Рейтинг */
+  .league-card { padding: 14px; border-radius: 20px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(255,215,106,.18), rgba(255,255,255,.04)); border: 1px solid rgba(255,215,106,.45); }
+  .lg-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 16px; }
+  .league-card small { display: block; margin-top: 6px; opacity: .75; font-size: 12px; font-weight: 700; }
+  .round-mini { width: 34px; height: 34px; border-radius: 12px; border: 0; background: rgba(255,255,255,.14); color: #fff; font-size: 16px; cursor: pointer; }
+  .podium { display: flex; align-items: flex-end; justify-content: center; gap: 8px; margin: 8px 0 14px; }
+  .pod { flex: 1; max-width: 112px; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .pod-av { position: relative; padding-top: 12px; }
+  .pod .crown { position: absolute; top: -6px; left: 50%; transform: translateX(-50%); font-size: 22px; }
+  .pod-name { font-size: 11.5px; font-weight: 800; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pod-score { font-size: 12px; color: #ffd76a; font-weight: 900; }
+  .pod-bar { width: 100%; border-radius: 12px 12px 0 0; display: flex; align-items: flex-start; justify-content: center; padding-top: 6px; font-size: 22px; background: linear-gradient(180deg, rgba(255,215,106,.4), rgba(255,215,106,.08)); }
+  .p1 .pod-bar { height: 84px; }
+  .p2 .pod-bar { height: 62px; background: linear-gradient(180deg, rgba(200,210,230,.35), rgba(200,210,230,.07)); }
+  .p3 .pod-bar { height: 46px; background: linear-gradient(180deg, rgba(205,127,50,.4), rgba(205,127,50,.08)); }
+  .pod.me .pod-name { color: #ffd76a; }
+  .lb-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 6px; border-radius: 16px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); }
+  .lb-row.me { border-color: #ffd76a; background: rgba(255,215,106,.12); }
+  .lb-rank { width: 24px; text-align: center; font-weight: 900; opacity: .75; }
+  .lb-name { flex: 1; min-width: 0; font-weight: 800; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-score { font-weight: 900; color: #ffd76a; font-size: 13px; white-space: nowrap; }
+  .u-av-wrap { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .u-av { border-radius: 50%; object-fit: cover; border: 2px solid var(--rc, #ffd76a); background: #141a3d; display: block; }
+  .u-av-skin { position: absolute; right: -3px; bottom: -3px; font-size: 13px; line-height: 1; background: #0f1432; border-radius: 50%; padding: 2px; border: 1px solid rgba(255,255,255,.25); }
+  .avatar img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+
+  /* Друзья и баннеры */
+  .invite { padding: 16px; border-radius: 24px; text-align: center; margin-bottom: 12px; background: radial-gradient(circle at 50% 0%, rgba(255,215,106,.3), transparent 70%), rgba(255,255,255,.05); border: 1px dashed rgba(255,215,106,.6); }
+  .inv-ic { font-size: 46px; line-height: 1; animation: floaty 2.4s ease-in-out infinite; }
+  .invite h4 { margin: 6px 0 10px; font-size: 18px; color: #ffe58a; }
+  .inv-link { font-family: monospace; font-size: 12px; color: #ffe58a; padding: 8px; border-radius: 10px; background: rgba(0,0,0,.35); word-break: break-all; user-select: text; -webkit-user-select: text; margin-bottom: 10px; }
+  .big-btn { border: 0; border-radius: 14px; padding: 13px; font: 900 15px inherit; cursor: pointer; background: rgba(255,255,255,.14); color: #fff; }
+  .big-btn.tg { flex: 1; background: linear-gradient(180deg, #4fc3f7, #0288d1); }
+  .big-btn.copy { flex: 0 0 58px; min-width: 58px; }
+  .stat3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .mini-stat { padding: 12px 4px; border-radius: 16px; text-align: center; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1); }
+  .mini-stat i { display: block; font-style: normal; font-size: 24px; }
+  .mini-stat b { font-size: 15px; font-weight: 900; }
+  .banner { position: relative; overflow: hidden; display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: 20px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,.18); }
+  .banner .b-ic { font-size: 38px; line-height: 1; }
+  .banner b { display: block; font-size: 15px; }
+  .banner small { font-size: 12px; opacity: .88; }
+  .banner.tt { background: linear-gradient(120deg, #ff2d6f, #7c4dff); }
+  .banner.tw { background: linear-gradient(120deg, #6a1b9a, #d81b60); }
+  .banner.ad { background: linear-gradient(120deg, #00b35a, #00695c); cursor: pointer; }
+  .banner.hit { background: linear-gradient(120deg, #ffb300, #ff6d00); color: #2a1500; cursor: pointer; }
+  .banner .ribbon { position: absolute; top: 8px; right: -28px; transform: rotate(35deg); background: #ff3b5c; color: #fff; font-size: 10px; font-weight: 900; padding: 2px 32px; }
+  .b-btn { margin-left: auto; padding: 9px 12px; border-radius: 12px; font-weight: 900; font-size: 13px; background: rgba(0,0,0,.3); color: #fff; white-space: nowrap; }
+
+  /* Колесо Фортуны 50/50 */
+  .wheel-side-btn {
+    background: radial-gradient(circle at 30% 30%, #ffd740, #ff3b5c) !important;
+    border-color: rgba(255,215,64,.85) !important;
+    box-shadow: 0 0 16px rgba(255,180,0,.55);
+    animation: wheelPulse 2.2s infinite ease-in-out;
+  }
+  @keyframes wheelPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  .wheel-wrap {
+    position: relative; width: 230px; height: 230px; margin: 10px auto 14px;
+    display: grid; place-items: center;
+  }
+  .wheel-pointer {
+    position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+    z-index: 5; font-size: 28px; filter: drop-shadow(0 4px 6px rgba(0,0,0,.85));
+  }
+  .wheel-disc {
+    width: 220px; height: 220px; border-radius: 50%;
+    border: 5px solid #ffd740;
+    box-shadow: 0 0 28px rgba(255,180,0,.45), inset 0 0 18px rgba(0,0,0,.65);
+    position: relative; overflow: hidden;
+    background: conic-gradient(
+      from 0deg,
+      #ffb300 0deg 45deg,
+      #c62828 45deg 90deg,
+      #ffb300 90deg 135deg,
+      #c62828 135deg 180deg,
+      #ffb300 180deg 225deg,
+      #c62828 225deg 270deg,
+      #ffb300 270deg 315deg,
+      #c62828 315deg 360deg
+    );
+  }
+  .wheel-lbl {
+    position: absolute; left: 50%; top: 50%;
+    width: 0; height: 0;
+  }
+  .wheel-lbl span {
+    display: block; transform: translate(-50%, -86px);
+    font-weight: 900; font-size: 13px; color: #fff;
+    text-shadow: 0 2px 4px rgba(0,0,0,.9); white-space: nowrap;
+  }
+  .wheel-center {
+    position: absolute; width: 48px; height: 48px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #3a2014, #140905);
+    border: 3px solid #ffd740; z-index: 4;
+    display: grid; place-items: center; font-size: 22px;
+    box-shadow: 0 4px 12px rgba(0,0,0,.7);
+  }
+  .wheel-odds {
+    display: flex; justify-content: center; gap: 8px; margin-bottom: 10px;
+  }
+  .wheel-odds span {
+    padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 900;
+  }
+  .wheel-odds .w-win { background: rgba(255,196,0,.2); color: #ffd740; border: 1px solid rgba(255,215,64,.4); }
+  .wheel-odds .w-lose { background: rgba(255,59,92,.2); color: #ff8a9d; border: 1px solid rgba(255,59,92,.4); }
+
+  /* Аркада Мини-Игр (покупка за сотни миллионов / миллиарды коинов) */
+  .arcade-side-btn {
+    background: linear-gradient(135deg, #7c4dff, #00e5ff) !important;
+    border-color: rgba(124,232,255,.85) !important;
+    box-shadow: 0 0 16px rgba(0,229,255,.5);
+    animation: wheelPulse 2.4s infinite ease-in-out;
+  }
+  .arcade-side-btn small { color: #fff !important; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+  .mg-card {
+    position: relative; overflow: hidden;
+    padding: 14px; border-radius: 22px; margin-bottom: 12px;
+    background: linear-gradient(145deg, rgba(35,44,104,.88), rgba(16,20,52,.94));
+    border: 1px solid rgba(255,255,255,.16);
+    box-shadow: 0 8px 24px rgba(0,0,0,.38);
+  }
+  .mg-card.unlocked {
+    border-color: rgba(105,240,174,.55);
+    background: linear-gradient(145deg, rgba(20,56,64,.82), rgba(16,22,56,.95));
+  }
+  .mg-card.can-buy {
+    border-color: rgba(255,215,64,.75);
+    box-shadow: 0 0 22px rgba(255,195,40,.25);
+  }
+  .mg-top { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .mg-ic {
+    width: 54px; height: 54px; border-radius: 18px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; font-size: 30px;
+    background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.22), rgba(0,0,0,.35));
+    border: 1px solid rgba(255,255,255,.2);
+  }
+  .mg-title { flex: 1; min-width: 0; }
+  .mg-title b { display: block; font-size: 16px; line-height: 1.2; }
+  .mg-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+  .mg-tag {
+    font-size: 10.5px; font-weight: 900; padding: 2px 8px; border-radius: 99px;
+    background: rgba(255,255,255,.12); color: #fff;
+  }
+  .mg-tag.boost { background: rgba(105,240,174,.2); color: #69f0ae; border: 1px solid rgba(105,240,174,.4); }
+  .mg-tag.lv { background: rgba(255,215,64,.22); color: #ffd740; border: 1px solid rgba(255,215,64,.45); }
+  .mg-desc { font-size: 12.5px; opacity: .84; line-height: 1.4; margin-bottom: 10px; }
+  .mg-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mg-btn {
+    flex: 1; min-width: 135px; padding: 11px 12px; border-radius: 14px; border: 0;
+    font: 900 13px inherit; cursor: pointer; text-align: center; transition: transform .12s;
+  }
+  .mg-btn:active { transform: scale(.96); }
+  .mg-btn.buy { background: linear-gradient(180deg, #ffe58a, #ffb300); color: #1b1200; }
+  .mg-btn.buy.locked { background: rgba(255,255,255,.12); color: rgba(255,255,255,.65); }
+  .mg-btn.play { background: linear-gradient(180deg, #69f0ae, #00c853); color: #04210f; font-size: 14px; }
+  .mg-btn.up { background: rgba(124,232,255,.16); color: #7ce8ff; border: 1px solid rgba(124,232,255,.4); flex: 0 0 auto; }
+
+  /* Стили интерфейса */
+  .gold-border {
+    border: 2px solid #ffd740 !important;
+    box-shadow: 0 0 18px rgba(255, 215, 64, .35) !important;
+  }
+  .rarity-epic { background: rgba(224, 64, 251, .2); color: #e040fb; border: 1px solid rgba(224, 64, 251, .4); }
+  .rarity-legend { background: rgba(255, 179, 0, .2); color: #ffb300; border: 1px solid rgba(255, 179, 0, .4); }
+  .rarity-mythic { background: rgba(255, 64, 129, .2); color: #ff4081; border: 1px solid rgba(255, 64, 129, .4); }
+  .rarity-ultra { background: rgba(0, 229, 255, .2); color: #00e5ff; border: 1px solid rgba(0, 229, 255, .4); }
+</style>
+</head>
+<body>
+
+<!-- Видео-фон с камеры пользователя и кастомным фильтром -->
+<div id="camWrap">
+  <video id="camVideo" autoplay playsinline muted></video>
+  <div id="camOverlay"></div>
+</div>
+
+<div class="glow" id="glow"></div>
+
+<!-- Верхняя панель -->
+<div class="top-bar">
+  <div class="profile" id="profileBtn">
+    <div class="avatar">🍪</div>
+    <div class="meta"><b id="leagueBadge">🥉 Бронзовая Крошка</b><small id="rankTxt">🏆 #—</small></div>
+  </div>
+  <button class="pill-btn streak-pill" id="streakTopBtn">🔥 <span id="streakCountTop">1</span></button>
+  <button class="pill-btn gem-pill" id="topDonateBtn">💎 <span id="gems">5</span> <span class="plus">+</span></button>
+</div>
+
+<!-- Главный счётчик -->
+<div class="hud">
+  <div class="big"><span class="coin">🪙</span><div id="count">0</div></div>
+  <div class="stats">
+    <div class="stat">👆 +<span id="pw">1</span></div>
+    <div class="stat">🤖 <span id="aps">0</span>/с</div>
+    <div class="stat">⭐ <span id="lvl">1</span></div>
+  </div>
+  <div class="bar"><i id="barFill"></i></div>
+  <b id="coins" hidden>0</b>
+</div>
+
+<!-- Боковые кнопки -->
+<div class="side left">
+  <button class="round-btn" id="activeSkinChip">🍪</button>
+  <button class="round-btn wheel-side-btn" id="wheelSideBtn">🎡<small>50/50</small></button>
+</div>
+<div class="side right">
+  <button class="round-btn" id="camToggleBtn">📷<span class="hide" id="camStatusTxt">ВЫКЛ</span></button>
+  <button class="round-btn" id="filterCycleBtn">🎭<span class="hide" id="filterNameTxt">Неон 67</span></button>
+  <button class="round-btn active" id="musicToggleBtn">🎵<span class="hide" id="musicStatusTxt">АВТО</span></button>
+</div>
+
+<!-- 3D Печенька ОРЕО -->
+<div id="stage">
+  <div id="wrap">
+    <div id="cookie"></div>
+  </div>
+</div>
+
+<!-- Энергия -->
+<div class="energy-dock">
+  <div class="energy" id="energyHudBox">
+    ⚡<div class="bar energy-bar"><i id="energyFill" style="width:100%"></i></div>
+    <span id="energyTxt">500/500</span><span class="e-plus">+</span>
+  </div>
+  <div class="boost-chip" id="boostChip" style="display:none">🚀</div>
+</div>
+
+<!-- Нижняя навигация -->
+<nav class="bottom-nav">
+  <button class="nav-btn" data-tab="upgrades"><i>⚡</i><span>Буст</span></button>
+  <button class="nav-btn" data-tab="cases"><i>🎁</i><span>Кейсы</span><span class="nav-badge" id="freeCaseBadge">2</span></button>
+  <button class="nav-btn" data-tab="quests"><i>📋</i><span>Задания</span><span class="nav-badge" id="questBadge">!</span></button>
+  <button class="nav-btn" data-tab="leaderboard"><i>🏆</i><span>Топ</span></button>
+  <button class="nav-btn" data-tab="refs"><i>👥</i><span>Друзья</span></button>
+  <button class="nav-btn" data-tab="donate"><i>💎</i><span>Магазин</span></button>
+</nav>
+<div class="footer-strip">🍪 ОРЕО</div>
+
+<!-- Выдвижное окно разделов -->
+<div id="drawer">
+  <div class="drawer-head">
+    <span id="drawerTitle">Раздел</span>
+    <button id="drawerClose">✕</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</div>
+
+<!-- Модальное окно (Энергия закончилась / Выигрыш кейса / Стрик) -->
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal-card" id="modalCard"></div>
+</div>
+
+
+
+<script>
+(() => {
+  const stage = document.getElementById('stage');
+  const wrap = document.getElementById('wrap');
+  const cookie = document.getElementById('cookie');
+  const countEl = document.getElementById('count');
+  const glow = document.getElementById('glow');
+  const $ = id => document.getElementById(id);
+  const BASE_TAP = 1; // 1 базовый тап на старте = 1 🪙 (целые, сочные числа с пробелами!)
+  const roundCoin = n => Math.max(0, Math.round(Number(n) || 0));
+  const fmt = n => Math.floor(Number(n) || 0).toLocaleString('ru-RU');
+  const fmtInt = n => Math.floor(Number(n) || 0).toLocaleString('ru-RU');
+
+  // ---------- СКИНЫ ОРЕО И ЭКОНОМИКА ЦЕЛЫХ ЧИСЕЛ ----------
+  const SKINS = {
+    classic: {
+      id: 'classic', name: 'Классический ОРЕО', icon: '🍪', rarity: 'Обычный', rarityCls: 'rarity-common',
+      mult: 1.0, marketPrice: 500,
+      wafer1: '#2a1710', wafer2: '#34201a', cream1: '#f6f1e4', cream2: '#fff9ea',
+      svgStop1: '#52321f', svgStop2: '#1c0e08', stroke: '#5e3b27', textFill: '#e9dfd0',
+      glow: 'rgba(120,150,255,.38)'
+    },
+    berry: {
+      id: 'berry', name: 'Клубничный ОРЕО', icon: '🍓', rarity: 'Редкий', rarityCls: 'rarity-rare',
+      mult: 1.5, marketPrice: 15000,
+      wafer1: '#381624', wafer2: '#4a1c30', cream1: '#ff9ebb', cream2: '#ffc4d6',
+      svgStop1: '#6e2542', svgStop2: '#290b17', stroke: '#ff80ab', textFill: '#ffe4ec',
+      glow: 'rgba(255,105,165,.42)'
+    },
+    mint: {
+      id: 'mint', name: 'Мятный Кибер-ОРЕО', icon: '🧪', rarity: 'Редкий', rarityCls: 'rarity-rare',
+      mult: 2.0, marketPrice: 45000,
+      wafer1: '#102826', wafer2: '#163835', cream1: '#64ffda', cream2: '#a7ffeb',
+      svgStop1: '#1d4d48', svgStop2: '#081c1a', stroke: '#00e5ff', textFill: '#b2fef7',
+      glow: 'rgba(0,230,195,.42)'
+    },
+    neon67: {
+      id: 'neon67', name: 'Неоновый 67 ОРЕО', icon: '⚡', rarity: 'Эпический', rarityCls: 'rarity-epic',
+      mult: 3.0, marketPrice: 150000,
+      wafer1: '#1d0b38', wafer2: '#2d1254', cream1: '#e040fb', cream2: '#7c4dff',
+      svgStop1: '#4a148c', svgStop2: '#12002b', stroke: '#00e5ff', textFill: '#80d8ff',
+      glow: 'rgba(213,0,249,.48)'
+    },
+    gold: {
+      id: 'gold', name: 'Золотой ОРЕО 999', icon: '👑', rarity: 'Легендарный', rarityCls: 'rarity-legend',
+      mult: 4.0, marketPrice: 500000,
+      wafer1: '#9c6f08', wafer2: '#c99718', cream1: '#fff3b0', cream2: '#ffffff',
+      svgStop1: '#ffd740', svgStop2: '#785200', stroke: '#fff8d6', textFill: '#fffdf2',
+      glow: 'rgba(255,215,64,.62)'
+    },
+    twix: {
+      id: 'twix', name: 'Дима Твикс Cosmic ОРЕО', icon: '🎸', rarity: 'Мифический', rarityCls: 'rarity-mythic',
+      mult: 5.0, marketPrice: 1500000,
+      wafer1: '#3b0918', wafer2: '#1a093b', cream1: '#ffab40', cream2: '#ff4081',
+      svgStop1: '#ff5252', svgStop2: '#1a0033', stroke: '#ffd740', textFill: '#ffe57f',
+      glow: 'rgba(255,64,129,.6)'
+    }
+  };
+
+  // Кейсы со скинами печенек и их экономика (хардкорные шансы в бесплатных, высокие — в донатном VIP)
+  const CASES = [
+    {
+      id: 'free_starter',
+      name: '🎁 Стартовый Бесплатный Кейс',
+      desc: 'Бесплатный кейс раз в 24 часа. Выбить Золотой ОРЕО почти нереально (0.05%), но вдруг повезёт?',
+      priceCoins: 0, priceGems: 0, isFreeType: 'daily',
+      drops: [
+        { skin: 'classic', chance: 84 },
+        { skin: 'berry', chance: 12.5 },
+        { skin: 'mint', chance: 3 },
+        { skin: 'neon67', chance: 0.45 },
+        { skin: 'gold', chance: 0.05 }
+      ]
+    },
+    {
+      id: 'free_hype',
+      name: '🔥 Бесплатный Кейс Активности',
+      desc: 'Даётся за 250 ручных тапов в день. Шансы чуть выше, но топ-скины — большая редкость!',
+      priceCoins: 0, priceGems: 0, isFreeType: 'activity',
+      drops: [
+        { skin: 'classic', chance: 70 },
+        { skin: 'berry', chance: 21 },
+        { skin: 'mint', chance: 7.5 },
+        { skin: 'neon67', chance: 1.3 },
+        { skin: 'gold', chance: 0.2 }
+      ]
+    },
+    {
+      id: 'crumb_case',
+      name: '📦 Крошка-Кейс (За коины)',
+      desc: 'Базовый кейс за натапанные печенько-коины. Шанс на топ-скины минимален, зато доступен за тапы!',
+      priceCoins: 25000, priceGems: 0,
+      drops: [
+        { skin: 'classic', chance: 58 },
+        { skin: 'berry', chance: 28 },
+        { skin: 'mint', chance: 11.5 },
+        { skin: 'neon67', chance: 2.3 },
+        { skin: 'gold', chance: 0.2 }
+      ]
+    },
+    {
+      id: 'royal_cream',
+      name: '👑 Королевский Кейс (За Кристаллы)',
+      desc: 'Элитный кейс ТОЛЬКО за Кристаллы 💎! Никаких обычных печенек и повышенный шанс на Золотой ОРЕО и Диму Твикса!',
+      priceCoins: 0, priceGems: 25,
+      drops: [
+        { skin: 'berry', chance: 30 },
+        { skin: 'mint', chance: 38 },
+        { skin: 'neon67', chance: 24 },
+        { skin: 'gold', chance: 6.5 },
+        { skin: 'twix', chance: 1.5 }
+      ]
+    },
+    {
+      id: 'golden_vip',
+      name: '🏆 VIP-Кейс Магната (За Кристаллы)',
+      desc: 'Самый элитарный кейс ОРЕО за Кристаллы 💎! Только здесь 45% суммарный шанс выбить Золотой ОРЕО или Диму Твикса!',
+      priceCoins: 0, priceGems: 65,
+      drops: [
+        { skin: 'mint', chance: 18 },
+        { skin: 'neon67', chance: 37 },
+        { skin: 'gold', chance: 33 },
+        { skin: 'twix', chance: 12 }
+      ]
+    }
+  ];
+
+  // ---------- НАСТРОЙКИ ОБЛАЧНОЙ БАЗЫ И РЕЛИЗА ----------
+  const OREO_CONFIG = {
+    FIREBASE_DB_URL: 'https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app/',
+    RELEASE_MODE: false,
+    RELEASE_SEASON_ID: 1,
+    ECONOMY_VERSION: 3, // Экономика v3: воодушевляющие целые числа + быстрый авто-дрон + прогрессивные цены
+    SHOW_FAKE_BOTS: false
+  };
+
+  // ---------- СОСТОЯНИЕ ИГРОКА И СОХРАНЕНИЕ ----------
+  const SAVE_KEY = 'oreo-tap-save-v2';
+  const legacyRaw = localStorage.getItem('oreo-tap-save-v1');
+  const savedRaw = localStorage.getItem(SAVE_KEY) || legacyRaw || '{}';
+  let loaded = {};
+  try { loaded = JSON.parse(savedRaw); } catch (e) {}
+
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+
+  const defaultState = {
+    count: 0,
+    coins: 0,
+    gems: 5,  // стартовые ОРЕО-кристаллы
+    lv: { power: 0, auto: 0, crit: 0, critx: 0, combo: 0, energyMax: 0 },
+    equippedSkin: 'classic',
+    inventory: { classic: 1 },
+    freeStarterClaimedDate: '',
+    freeActivityClaimedDate: '',
+    energy: 500,
+    lastEnergyTs: Date.now(),
+    streakDays: 1,
+    lastLoginDate: '',
+    streakShields: 0,
+    dailyDate: '',
+    dailyTaps: 0,
+    dailyMaxCombo: 0,
+    dailyCasesOpened: 0,
+    dailyCamMusicTaps: 0,
+    dailyRefShared: false,
+    dailyGemsExchanged: 0,
+    claimedQuests: {},
+    referralsCount: 0,
+    refPassiveEarned: 0,
+    referredBy: '',
+    vipUnlimitedEnergy: false,
+    boostUntil: 0,
+    marketVolume: 0,
+    demoUsed: false,
+    demoCoinsTaken: 0,
+    demoGemsTaken: 0,
+    wheelSpunDate: '',
+    economyVersion: 3,
+    gemsWipeDone: 1,
+    releaseWipeDone: 0
+  };
+
+  // Переход на экономику v3 (возврат больших красивых целых чисел вместо дробных 1.5379 из v2):
+  if (loaded && (loaded.economyVersion || 0) < OREO_CONFIG.ECONOMY_VERSION) {
+    const earlyUid = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initDataUnsafe && Telegram.WebApp.initDataUnsafe.user && Telegram.WebApp.initDataUnsafe.user.id)
+      ? String(Telegram.WebApp.initDataUnsafe.user.id)
+      : (localStorage.getItem('oreo_anon_id') || '');
+    let rawCoins = Math.max(0, Number(loaded.coins) || Number(loaded.count) || 0);
+    let rawCount = Math.max(rawCoins, Number(loaded.count) || 0);
+    if (loaded.economyVersion === 2 || (rawCoins > 0 && rawCoins < 10000)) {
+      // Переводим дробные балансы v2 (1.5379 -> 15 379 000, 1.0000 -> 10 000 000, 4.2160 -> 42 160 000) обратно в целые миллионы!
+      rawCoins = Math.round(rawCoins * 10000000);
+      rawCount = Math.round(rawCount * 10000000);
+    } else if (earlyUid === '481293676' && rawCoins > 50000000) {
+      // Если вдруг старый сейв v1 у Дениса — вычитаем только 50 млн АФК-доли
+      rawCoins = rawCoins - 50000000;
+      rawCount = Math.max(rawCoins, rawCount - 50000000);
+    }
+    loaded.coins = roundCoin(rawCoins);
+    loaded.count = roundCoin(rawCount);
+    loaded.economyVersion = OREO_CONFIG.ECONOMY_VERSION;
+    loaded.gemsWipeDone = 1;
+  }
+
+  // Списание бесплатно накликанных тестовых кристаллов (из старой кнопки «Магнат ОРЕО тест»)
+  if (loaded && (loaded.gemsWipeDone || 0) < 1) {
+    if (loaded.demoUsed || (Number(loaded.gems) || 0) > 15) {
+      loaded.gems = 5;
+      loaded.vipUnlimitedEnergy = false;
+      loaded.demoUsed = false;
+      loaded.demoGemsTaken = 0;
+    }
+    loaded.gemsWipeDone = 1;
+  }
+
+  const VIP_FOUNDERS = ['594228143', '481293676', '1582574743']; // Павел, Денис, Вика
+  const state = Object.assign({}, defaultState, loaded);
+  state.lv = Object.assign({}, defaultState.lv, state.lv);
+  state.inventory = Object.assign({ classic: 1 }, state.inventory);
+  state.claimedQuests = state.claimedQuests || {};
+
+  const initTgUid = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initDataUnsafe && Telegram.WebApp.initDataUnsafe.user && Telegram.WebApp.initDataUnsafe.user.id)
+    ? String(Telegram.WebApp.initDataUnsafe.user.id) : '';
+  // Если вдруг на клиенте остался дробный баланс (< 10000 у основателей), поднимаем до целых миллионов
+  if (VIP_FOUNDERS.includes(initTgUid) && state.coins > 0 && state.coins < 10000) {
+    state.coins = roundCoin(state.coins * 10000000);
+    state.count = roundCoin(Math.max(state.coins, (Number(state.count) || 0) * 10000000));
+  }
+  // Персональный подарок для Вики (Viiiii, id 1582574743) от Павла: 10 000 000 коинов!
+  if (initTgUid === '1582574743' && ((state.giftFromPavel || 0) < 2 || state.coins < 10000000)) {
+    state.coins = roundCoin(Math.max(10000000, Number(state.coins) || 0));
+    state.count = roundCoin(Math.max(state.coins, Number(state.count) || 0));
+    state.giftFromPavel = 2;
+    setTimeout(() => showToast('🎁 Подарок от Павла: 10 000 000 🪙!'), 900);
+  }
+  // Выдача всем троим (Павел, Денис, Вика) максимальных бустов (включая новый турбо Авто-дрон 15/15) и 50 000 💎 кристаллов
+  if (VIP_FOUNDERS.includes(initTgUid)) {
+    state.lv = { power: 25, auto: 15, crit: 15, critx: 10, combo: 10, energyMax: 15 };
+    state.vipUnlimitedEnergy = true;
+    state.energy = 2750;
+    if ((state.founderGrantId || 0) < 1) {
+      state.gems = 50000;
+      state.founderGrantId = 1;
+      setTimeout(() => showToast('👑 VIP-бонус основателя: ВСЕ бусты MAX + 50 000 💎!'), 1200);
+    } else if ((state.gems || 0) < 1000) {
+      state.gems = 50000;
+    }
+  }
+  state.coins = roundCoin(state.coins);
+  let count = roundCoin(state.count);
+
+  // Очистка тестовой халявы при переходе в РЕЛИЗ (сохраняет честные тапы, уровень и стрик!)
+  if (OREO_CONFIG.RELEASE_MODE && state.releaseWipeDone < OREO_CONFIG.RELEASE_SEASON_ID) {
+    const honestTaps = Math.max(0, count);
+    state.coins = roundCoin(Math.min(state.coins, honestTaps * 1.2 + 500));
+    if (state.demoUsed) {
+      state.gems = 0;
+      state.vipUnlimitedEnergy = false;
+      state.boostUntil = 0;
+      state.lv = { power: 0, auto: 0, crit: 0, critx: 0, combo: 0, energyMax: 0 };
+      state.inventory = { classic: 1 };
+      state.equippedSkin = 'classic';
+      state.coins = roundCoin(honestTaps);
+    }
+    state.demoUsed = false;
+    state.demoCoinsTaken = 0;
+    state.demoGemsTaken = 0;
+    state.releaseWipeDone = OREO_CONFIG.RELEASE_SEASON_ID;
+  }
+
+  // ---------- ПРОВЕРКА ЕЖЕДНЕВНОГО СТРИКА (КАК В DUOLINGO: ПРОПУСК = СГОРАНИЕ ПРОГРЕССА) ----------
+  function checkDailyStreakAndReset() {
+    const today = todayStr();
+    if (state.dailyDate !== today) {
+      state.dailyDate = today;
+      state.dailyTaps = 0;
+      state.dailyMaxCombo = 0;
+      state.dailyCasesOpened = 0;
+      state.dailyCamMusicTaps = 0;
+      state.dailyRefShared = false;
+      state.dailyGemsExchanged = 0;
+      state.claimedQuests = {};
+      save();
+      refreshHud();
+      if (activeTab) renderCurrentTab();
+    }
+
+    if (!state.lastLoginDate) {
+      state.lastLoginDate = today;
+      state.streakDays = Math.max(1, state.streakDays || 1);
+      return;
+    }
+    if (state.lastLoginDate === today) return;
+
+    const prev = new Date(state.lastLoginDate + 'T00:00:00');
+    const curr = new Date(today + 'T00:00:00');
+    const diffDays = Math.round((curr - prev) / 86400000);
+
+    if (diffDays === 1) {
+      state.streakDays = (state.streakDays || 1) + 1;
+      state.lastLoginDate = today;
+      const bonus = roundCoin(state.streakDays * 1500);
+      state.coins = roundCoin(state.coins + bonus);
+      setTimeout(() => showToast(`🔥 День ${state.streakDays} подряд! +${fmt(bonus)} 🪙`), 600);
+    } else if (diffDays > 1) {
+      if (state.streakShields > 0) {
+        state.streakShields--;
+        state.lastLoginDate = today;
+        setTimeout(() => showToast('🧊 Заморозка спасла твой стрик и прогресс от сгорания!'), 600);
+      } else {
+        // Жёсткое правило Duolingo-ОРЕО: не заходишь — прогресс и стрик сгорают!
+        count = 0;
+        state.count = 0;
+        state.coins = 0;
+        state.lv = { power: 0, auto: 0, crit: 0, critx: 0, combo: 0, energyMax: 0 };
+        state.streakDays = 1;
+        state.lastLoginDate = today;
+        setTimeout(() => {
+          showModal(`
+            <div style="font-size:48px">💀🔥</div>
+            <h3>Прогресс сгорел!</h3>
+            <p>Ты пропустил день входа в <b>ОРЕО</b>! По правилам ударного режима без заморозки весь прогресс тапов и коинов сгорел до нуля.<br><br>Заходи каждый день и держи стрик!</p>
+            <button class="modal-btn primary" onclick="window._closeOreoModal()">Понял, начинаю новый разгон! 🍪</button>
+          `);
+        }, 500);
+      }
+    }
+  }
+  checkDailyStreakAndReset();
+
+  // ---------- 3D ПЕЧЕНЬКА С ПОДДЕРЖКОЙ СКИНОВ (И НАДПИСЬЮ "ОРЕО" НА РУССКОМ) ----------
+  const STEP = 3;
+  const WAFER = 8;
+  const CREAM = 9;
+  const waferEls = [];
+  const creamEls = [];
+  let topLayerEl = null;
+
+  function makeTopSVG(sk) {
+    return `
+    <svg viewBox="0 0 200 200">
+      <defs>
+        <radialGradient id="gSkin" cx="40%" cy="35%" r="75%">
+          <stop offset="0" stop-color="${sk.svgStop1}"/><stop offset="1" stop-color="${sk.svgStop2}"/>
+        </radialGradient>
+      </defs>
+      <circle cx="100" cy="100" r="100" fill="url(#gSkin)"/>
+      <circle cx="100" cy="100" r="90" fill="none" stroke="#150a06" stroke-width="3"/>
+      <circle cx="100" cy="100" r="86" fill="none" stroke="${sk.stroke}" stroke-width="1.6" opacity=".8"/>
+      <circle cx="100" cy="100" r="66" fill="none" stroke="#150a06" stroke-width="2"/>
+      <circle cx="100" cy="100" r="64" fill="none" stroke="${sk.stroke}" stroke-width="1.1" opacity=".8"/>
+      ${Array.from({length: 36}, (_, i) => {
+        const a = i / 36 * Math.PI * 2, x = 100 + Math.cos(a) * 78, y = 100 + Math.sin(a) * 78;
+        return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.2" fill="#150a06"/><circle cx="${(x-.6).toFixed(1)}" cy="${(y-.6).toFixed(1)}" r="1" fill="${sk.stroke}" opacity=".85"/>`;
+      }).join('')}
+      ${Array.from({length: 4}, (_, i) => `
+        <g transform="rotate(${i*90} 100 100)">
+          <path d="M100 100 C 92 78, 92 60, 100 46 C 108 60, 108 78, 100 100Z" fill="#170b07" stroke="${sk.stroke}" stroke-width="1.1"/>
+        </g>`).join('')}
+      <circle cx="100" cy="100" r="14" fill="#170b07" stroke="${sk.stroke}" stroke-width="1.3"/>
+      <text x="100" y="104.5" text-anchor="middle" font-family="Arial Black, Impact, sans-serif" font-weight="900" font-size="11.5" fill="${sk.textFill}" letter-spacing="-.3">ОРЕО</text>
+    </svg>`;
+  }
+
+  function slice(cls, z, html = '') {
+    const d = document.createElement('div');
+    d.className = 'layer ' + cls;
+    d.style.transform = `translateZ(${z}px)`;
+    if (html) d.innerHTML = html;
+    cookie.appendChild(d);
+    return d;
+  }
+
+  const totalZ = (WAFER * 2 + CREAM) * STEP;
+  let z = -totalZ / 2;
+  slice('wafer edge', z);
+  for (let i = 0; i < WAFER; i++, z += STEP) {
+    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1 });
+  }
+  for (let i = 0; i < CREAM; i++, z += STEP) {
+    const s = slice('cream' + (i % 2 ? ' mid' : ''), z);
+    s.style.inset = (4.5 + Math.sin(i * 1.7) * 0.8) + '%';
+    creamEls.push({ el: s, odd: i % 2 === 1 });
+  }
+  for (let i = 0; i < WAFER; i++, z += STEP) {
+    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1 });
+  }
+  topLayerEl = slice('top', z, makeTopSVG(SKINS[state.equippedSkin] || SKINS.classic));
+  slice('', z + .5, '').style.background =
+    'radial-gradient(circle at 30% 25%, rgba(255,255,255,.22), transparent 45%)';
+
+  function applySkinVisuals() {
+    const sk = SKINS[state.equippedSkin] || SKINS.classic;
+    waferEls.forEach(w => { w.el.style.background = w.odd ? sk.wafer1 : sk.wafer2; });
+    creamEls.forEach(c => { c.el.style.background = c.odd ? sk.cream2 : sk.cream1; });
+    if (topLayerEl) topLayerEl.innerHTML = makeTopSVG(sk);
+    document.documentElement.style.setProperty('--glow-color', sk.glow);
+    $('activeSkinChip').innerHTML = `${sk.icon}<small>×${sk.mult}</small>`;
+  }
+  applySkinVisuals();
+
+  // ---------- ПРУЖИННАЯ ФИЗИКА 3D ----------
+  const spr = (k, d) => ({ x: 0, v: 0, t: 0, k, d });
+  const tiltX = spr(150, 11), tiltY = spr(150, 11);
+  const scale = spr(260, 14); scale.x = 1; scale.t = 1;
+  const spin = spr(60, 8);
+  const press = spr(300, 16);
+  const BASE_X = 52;
+
+  function step(s, dt) {
+    const a = -s.k * (s.x - s.t) - s.d * s.v;
+    s.v += a * dt; s.x += s.v * dt;
+  }
+
+  let t0 = performance.now();
+  function frame(now) {
+    const dt = Math.min(.033, (now - t0) / 1000); t0 = now;
+    [tiltX, tiltY, scale, spin, press].forEach(s => step(s, dt));
+    const time = now / 1000;
+    const floatY = Math.sin(time * 1.6) * 8;
+    const idleRX = Math.sin(time * 1.1) * 2.5;
+    const idleRZ = Math.cos(time * .9) * 3;
+    wrap.style.transform =
+      `translateY(${floatY + press.x * 14}px) scale(${scale.x}) ` +
+      `rotateX(${BASE_X + tiltX.x + idleRX}deg) rotateY(${tiltY.x}deg) rotateZ(${spin.x + idleRZ}deg)`;
+    glow.style.opacity = .75 + Math.sin(time * 1.6) * .15 + Math.min(.5, Math.abs(scale.x - 1) * 4);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---------- КАМЕРА ПОЛЬЗОВАТЕЛЯ НА ФОНЕ С НЕОБЫЧНЫМИ ФИЛЬТРАМИ ----------
+  const CAM_FILTERS = [
+    { name: 'Неон 67', css: (p) => `contrast(${1.45 + p*.4}) saturate(${2.2 + p}) hue-rotate(${190 + p*90}deg) brightness(${1.05 + p*.25})` },
+    { name: 'Золотой ОРЕО', css: (p) => `sepia(1) saturate(${3.2 + p*1.5}) contrast(${1.35 + p*.3}) brightness(${1.1 + p*.25}) hue-rotate(${-15 + p*25}deg)` },
+    { name: 'Тепловизор', css: (p) => `invert(${0.85}) hue-rotate(${140 + p*120}deg) saturate(${3 + p}) contrast(1.6)` },
+    { name: 'Дима Твикс VHS', css: (p) => `contrast(${1.5 + p*.5}) saturate(1.8) hue-rotate(${290 + p*60}deg) drop-shadow(${4+p*8}px 0 0 rgba(255,0,90,.7))` },
+    { name: 'Кибер-Матрица', css: (p) => `sepia(1) hue-rotate(${75 + p*40}deg) saturate(4) contrast(1.5) brightness(${1 + p*.3})` }
+  ];
+  let camFilterIdx = 0;
+  let camStream = null;
+  let camEnabled = false;
+  let camDenied = false;
+  let userDisabledCam = false;
+  let camPulse = 0;
+
+  function updateCamFilterVisual() {
+    const f = CAM_FILTERS[camFilterIdx];
+    $('filterNameTxt').textContent = f.name;
+    if (camEnabled) {
+      $('camVideo').style.filter = f.css(camPulse);
+      $('camVideo').style.transform = `scaleX(-1) scale(${1 + camPulse * 0.06})`;
+    }
+  }
+
+  async function enableCamera(silentIfFail = false) {
+    if (camEnabled && camStream) return true;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (!silentIfFail) showToast('📷 Камера не поддерживается в этом браузере');
+      return false;
+    }
+    try {
+      camStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      });
+      const v = $('camVideo');
+      v.srcObject = camStream;
+      await v.play().catch(() => {});
+      camEnabled = true;
+      $('camWrap').classList.add('active');
+      $('camToggleBtn').classList.add('active');
+      $('camStatusTxt').textContent = 'ВКЛ';
+      updateCamFilterVisual();
+      if (!silentIfFail) showToast(`📷 Камера-фон включена! Фильтр: ${CAM_FILTERS[camFilterIdx].name}`);
+      return true;
+    } catch (err) {
+      camDenied = true;
+      if (!silentIfFail) showToast('📷 Разреши доступ к камере в браузере для селфи-фильтра!');
+      return false;
+    }
+  }
+
+  function disableCamera() {
+    if (camStream) {
+      camStream.getTracks().forEach(t => t.stop());
+      camStream = null;
+    }
+    camEnabled = false;
+    $('camWrap').classList.remove('active');
+    $('camToggleBtn').classList.remove('active');
+    $('camStatusTxt').textContent = 'ВЫКЛ';
+  }
+
+  $('camToggleBtn').onclick = () => {
+    if (camEnabled) { userDisabledCam = true; disableCamera(); }
+    else { userDisabledCam = false; camDenied = false; enableCamera(false); }
+  };
+
+  $('filterCycleBtn').onclick = () => {
+    camFilterIdx = (camFilterIdx + 1) % CAM_FILTERS.length;
+    updateCamFilterVisual();
+    showToast(`🎭 Фильтр камеры: ${CAM_FILTERS[camFilterIdx].name}`);
+    if (!camEnabled && !camDenied) enableCamera(true);
+  };
+
+  // ---------- ФОНОВАЯ ПЕСНЯ "lil ptiric.m4a" ВО ВРЕМЯ ТАПАНИЯ ----------
+  const bgMusic = new Audio('lil%20ptiric.m4a');
+  bgMusic.loop = true;
+  bgMusic.preload = 'auto';
+  bgMusic.volume = 0.75;
+  let musicMode = 'auto'; // 'auto' (играет во время тапания), 'on' (всегда), 'off' (выкл)
+  let musicFadeTimer = null;
+
+  function triggerMusicOnTap() {
+    if (musicMode === 'off') return;
+    if (bgMusic.paused) {
+      bgMusic.volume = 0.78;
+      bgMusic.play().catch(() => {});
+    }
+    if (musicMode === 'auto') {
+      clearTimeout(musicFadeTimer);
+      musicFadeTimer = setTimeout(() => {
+        if (musicMode === 'auto' && !bgMusic.paused) {
+          bgMusic.pause();
+        }
+      }, 4200);
+    }
+  }
+
+  $('musicToggleBtn').onclick = () => {
+    if (musicMode === 'auto') {
+      musicMode = 'on';
+      $('musicStatusTxt').textContent = 'НОН-СТОП';
+      $('musicToggleBtn').classList.add('active');
+      clearTimeout(musicFadeTimer);
+      bgMusic.play().catch(() => {});
+      showToast('🎵 Трек lil ptiric: играет постоянно!');
+    } else if (musicMode === 'on') {
+      musicMode = 'off';
+      $('musicStatusTxt').textContent = 'ВЫКЛ';
+      $('musicToggleBtn').classList.remove('active');
+      bgMusic.pause();
+      showToast('🔇 Фоновая музыка выключена');
+    } else {
+      musicMode = 'auto';
+      $('musicStatusTxt').textContent = 'АВТО';
+      $('musicToggleBtn').classList.add('active');
+      showToast('🎵 Трек lil ptiric: играет при тапании!');
+    }
+  };
+
+  // ---------- TELEGRAM MINI APP & РЕФЕРАЛЬНАЯ ССЫЛКА ----------
+  const BOT_USERNAME = 'oreo_67_bot';
+  const APP_SHORT_NAME = 'play';
+  const tg = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initData) ? Telegram.WebApp : null;
+  const haptic = (kind, style) => { try { tg && tg.HapticFeedback && tg.HapticFeedback[kind](style); } catch (e) {} };
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    try { tg.setHeaderColor('#141a3d'); tg.setBackgroundColor('#070919'); } catch (e) {}
+    try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
+  }
+  const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+  const playerName = (tgUser && tgUser.first_name) ? tgUser.first_name : 'Тапер ОРЕО';
+  const playerPhoto = (tgUser && tgUser.photo_url) ? tgUser.photo_url : '';
+  const playerId = (tgUser && tgUser.id) ? String(tgUser.id) : (localStorage.getItem('oreo_anon_id') || (() => {
+    const id = String(Math.floor(100000 + Math.random() * 900000));
+    localStorage.setItem('oreo_anon_id', id);
+    return id;
+  })());
+
+  // Показываем аватарку текущего игрока в верхней шапке
+  const topAvEl = document.querySelector('#profileBtn .avatar');
+  if (topAvEl) {
+    const myAvSrc = playerPhoto || (tgUser && tgUser.id ? `/.netlify/functions/bot?action=avatar&user_id=${encodeURIComponent(playerId)}` : '');
+    if (myAvSrc) {
+      const img = new Image();
+      img.onload = () => { topAvEl.innerHTML = ''; topAvEl.appendChild(img); };
+      img.src = myAvSrc;
+    }
+  }
+
+  // Исправленная чистая реферальная ссылка без заглушек YOUR_BOT/YOUR_APP и без слипания с текстом
+  function getReferralLink() {
+    return `https://t.me/${BOT_USERNAME}?start=ref_${playerId}`;
+  }
+  function getShareTelegramUrl() {
+    const cleanRefUrl = getReferralLink();
+    const shareText = '🍪 Тапай ОРЕО со мной, открывай бесплатный кейс на Золотой ОРЕО и лови 67! 🔥';
+    return `https://t.me/share/url?url=${encodeURIComponent(cleanRefUrl)}&text=${encodeURIComponent(shareText)}`;
+  }
+
+  // ---------- ПРОКАЧКА (ПРОГРЕССИВНАЯ ЭКОНОМИКА ЦЕЛЫХ ЧИСЕЛ + МОЩНЫЙ АВТО-ДРОН НА MAX) ----------
+  const rawTapBase = l => BASE_TAP + l * 2 + Math.floor(Math.pow(l, 2.6));
+  const UPS = [
+    { id: 'power', ic: '👆', name: 'Сила тапа ОРЕО', max: 25, base: 350, mul: 2.05,
+      desc: l => `Базовый тап: +${fmt(rawTapBase(l))} → +${fmt(rawTapBase(l + 1))}` },
+    { id: 'auto', ic: '🤖', name: 'Авто-дрон ОРЕО', max: 15, base: 2500, mul: 2.15,
+      desc: l => `Турбо-дрон: ${(l * 1.2).toFixed(1)} → ${((l + 1) * 1.2).toFixed(1)} кл/с` },
+    { id: 'crit', ic: '🎯', name: 'Шанс крита 67', max: 15, base: 1200, mul: 2.0,
+      desc: l => `Шанс крита ${(l * 1.5).toFixed(1)}% → ${((l + 1) * 1.5).toFixed(1)}%` },
+    { id: 'critx', ic: '💥', name: 'Сила крита', max: 10, base: 3000, mul: 2.15,
+      desc: l => `Крит ×${(2 + l * .3).toFixed(1)} → ×${(2 + (l + 1) * .3).toFixed(1)}` },
+    { id: 'combo', ic: '🔥', name: 'Драйв-Комбо', max: 10, base: 1800, mul: 2.05,
+      desc: l => `Быстрые тапы дают до +${l * 5}% → +${(l + 1) * 5}%` },
+    { id: 'energyMax', ic: '🔋', name: 'Объём энергии', max: 15, base: 900, mul: 1.95,
+      desc: l => `Макс. энергия ${500 + l * 150} ⚡ → ${500 + (l + 1) * 150} ⚡` }
+  ];
+  UPS.forEach(u => { if ((state.lv[u.id] || 0) > u.max) state.lv[u.id] = u.max; });
+
+  // ---------- БАЛАНС И ХАРАКТЕРИСТИКИ ТАПОВ ----------
+  let combo = 0;
+  const totalUpLevels = () => Object.values(state.lv).reduce((s, v) => s + (Number(v) || 0), 0);
+  // Каждое купленное улучшение удорожает все остальные бусты на +12% поверх их собственного множителя
+  const globalCostMult = () => 1 + totalUpLevels() * 0.12;
+  const cost = u => roundCoin(u.base * Math.pow(u.mul, state.lv[u.id] || 0) * globalCostMult());
+  const skinMult = () => (SKINS[state.equippedSkin] || SKINS.classic).mult;
+  const boostMult = () => (Date.now() < state.boostUntil ? 2 : 1);
+  const maxEnergy = () => 500 + (state.lv.energyMax || 0) * 150;
+  const tapPower = () => Math.max(1, roundCoin(rawTapBase(state.lv.power || 0) * skinMult() * boostMult()));
+  // Коэффициент роста скорости игрока (во сколько раз его тап выше стартового 1 🪙) — от него растут цены на бустеры
+  const speedInflation = () => Math.max(1, tapPower() / BASE_TAP);
+  const caseCoinCost = c => roundCoin((c.priceCoins || 0) * (1 + totalUpLevels() * 0.08));
+  const autoRate = () => (state.lv.auto || 0) * 1.2; // до 18 кликов/сек на MAX уровне (15/15)
+  const autoTapGain = () => tapPower(); // каждый авто-клик бьёт в полную силу тапа!
+  const autoCoinPerSec = () => roundCoin(autoRate() * autoTapGain());
+  const critChance = () => (state.lv.crit || 0) * 0.015;
+  const critMult = () => 2.0 + (state.lv.critx || 0) * 0.3;
+  const comboBonus = () => 1 + Math.min(1, combo / 15) * (state.lv.combo || 0) * 0.05;
+
+  // ---------- ЛИГИ И РЕЙТИНГ ПОЛЬЗОВАТЕЛЕЙ ----------
+  const LEAGUES = [
+    { min: 0, name: '🥉 Бронзовая Крошка' },
+    { min: 50000, name: '🥈 Серебряный Крем' },
+    { min: 1000000, name: '🥇 Золотой ОРЕО' },
+    { min: 10000000, name: '💎 Алмазный Магнат' },
+    { min: 50000000, name: '👑 Император ОРЕО 67' },
+    { min: 500000000, name: '🌌 Галактический Босс' },
+    { min: 2500000000, name: '🪐 Миллиардер ОРЕО' },
+    { min: 10000000000, name: '⚡ Абсолют 67' },
+    { min: 50000000000, name: '♾️ Божество ОРЕО' }
+  ];
+  const BOTS_LEADERBOARD = [
+    { name: 'Дима Твикс 🎸 [Амбассадор]', baseCoins: 25000000, skin: 'twix' },
+    { name: 'Золотой_Тапер_67', baseCoins: 12000000, skin: 'gold' },
+    { name: 'OreoWhale_RU', baseCoins: 6500000, skin: 'gold' },
+    { name: 'КиберПеченька', baseCoins: 3200000, skin: 'neon67' },
+    { name: 'Lil_Ptiric_Fan', baseCoins: 1400000, skin: 'neon67' },
+    { name: 'Макс_КриптоКрем', baseCoins: 650000, skin: 'mint' },
+    { name: 'Аня_ОРЕО_ТикТок', baseCoins: 240000, skin: 'berry' },
+    { name: 'Новичок_67', baseCoins: 45000, skin: 'classic' }
+  ];
+
+  function getLeague(c) {
+    let cur = LEAGUES[0];
+    for (const lg of LEAGUES) if (c >= lg.min) cur = lg;
+    return cur;
+  }
+
+  let cloudPlayers = [];
+
+  async function syncCloudLeaderboard() {
+    const db = (OREO_CONFIG.FIREBASE_DB_URL || '').replace(/\/+$/, '');
+    if (!db) return;
+    try {
+      const myScore = roundCoin(Math.max(state.coins, count));
+      // Сохраняем в облако только реальных игроков Telegram или тех, кто уже начал тапать (>0)
+      if ((tgUser && tgUser.id) || myScore > 0) {
+        await fetch(`${db}/players/${encodeURIComponent(playerId)}.json`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: playerId,
+            name: playerName,
+            photo: playerPhoto || '',
+            coins: myScore,
+            taps: roundCoin(count),
+            skin: state.equippedSkin || 'classic',
+            streak: state.streakDays || 1,
+            demoUsed: Boolean(state.demoUsed),
+            economyVersion: OREO_CONFIG.ECONOMY_VERSION,
+            giftFromPavel: state.giftFromPavel || 0,
+            releaseWipeDone: state.releaseWipeDone || 0,
+            adminResetId: state.adminResetId || 0,
+            ts: Date.now()
+          })
+        });
+      }
+      const res = await fetch(`${db}/players.json`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data === 'object') {
+          cloudPlayers = Object.values(data).filter(p => p && p.id && String(p.id) !== String(playerId));
+          refreshHud();
+          if (activeTab === 'leaderboard') renderCurrentTab();
+        }
+      }
+      try {
+        const bankRes = await fetch(`${db}/event_bank.json`);
+        if (bankRes.ok) {
+          const bData = await bankRes.json();
+          if (bData && typeof bData === 'object') {
+            window._eventBankData = bData;
+            if (activeTab === 'leaderboard') renderCurrentTab();
+          }
+        }
+      } catch (be) {}
+    } catch (e) {}
+  }
+
+  function getLeaderboardData() {
+    const list = [];
+    if (OREO_CONFIG.SHOW_FAKE_BOTS && !OREO_CONFIG.RELEASE_MODE) {
+      BOTS_LEADERBOARD.forEach(b => {
+        list.push({
+          id: '',
+          photo: '',
+          name: b.name,
+          coins: b.baseCoins,
+          skin: b.skin,
+          games: 0,
+          isMe: false
+        });
+      });
+    }
+    cloudPlayers.forEach(p => {
+      let pCoins = Number(p.coins) || 0;
+      // Если в облаке у игрока ещё старое дробное число из v2 (например 1.5379 или 4.2160) — умножаем на 10 000 000 до целых миллионов!
+      if (p.economyVersion === 2 || (pCoins > 0 && pCoins < 1000 && !Number.isInteger(pCoins))) {
+        pCoins = roundCoin(pCoins * 10000000);
+      } else if ((p.economyVersion || 0) < 2 && String(p.id) === '481293676' && pCoins > 50000000) {
+        pCoins = roundCoin(pCoins - 50000000);
+      } else {
+        pCoins = roundCoin(pCoins);
+      }
+      let pSkin = SKINS[p.skin] ? p.skin : 'classic';
+      if (OREO_CONFIG.RELEASE_MODE && (p.releaseWipeDone || 0) < OREO_CONFIG.RELEASE_SEASON_ID) {
+        const honestTaps = Math.max(0, Number(p.taps) || 0);
+        pCoins = roundCoin(Math.min(pCoins, honestTaps * 1.2 + 500));
+        if (p.demoUsed) pSkin = 'classic';
+      }
+      // Ограничиваем баланс Дениса до честных 50 млн в общем списке (остальное в Банке Ивентов)
+      if (String(p.id) === '481293676') {
+        pCoins = Math.min(pCoins, 50000000);
+      }
+      list.push({
+        id: String(p.id || ''),
+        photo: p.photo || '',
+        name: p.name || 'Тапер ОРЕО',
+        coins: pCoins,
+        skin: pSkin,
+        isMe: false,
+        isBankFounder: String(p.id) === '481293676'
+      });
+    });
+    const myCurrentScore = (String(playerId) === '481293676' ? Math.min(roundCoin(Math.max(state.coins, count)), 50000000) : roundCoin(Math.max(state.coins, count)));
+    list.push({
+      id: playerId,
+      photo: playerPhoto || '',
+      name: `${playerName} (Ты)`,
+      coins: myCurrentScore,
+      skin: state.equippedSkin,
+      isMe: true,
+      isBankFounder: String(playerId) === '481293676'
+    });
+    list.sort((a, b) => b.coins - a.coins);
+    return list;
+  }
+
+  // ---------- ЕЖЕДНЕВНЫЕ ЗАДАНИЯ ----------
+  const DAILY_QUESTS = [
+    {
+      id: 'q_taps100', ic: '👆', title: 'Разогрев пальцев',
+      desc: 'Натапай 200 раз вручную за сегодня',
+      progress: () => Math.min(200, state.dailyTaps), target: 200, rewardCoins: 2500, rewardGems: 0
+    },
+    {
+      id: 'q_combo15', ic: '🔥', title: 'Мастер ритма lil ptiric',
+      desc: 'Достигни комбо ×20 быстрыми тапами',
+      progress: () => Math.min(20, state.dailyMaxCombo), target: 20, rewardCoins: 4000, rewardGems: 1
+    },
+    {
+      id: 'q_case1', ic: '🎁', title: 'Охотник за скинами',
+      desc: 'Открой любой кейс со скинами ОРЕО',
+      progress: () => Math.min(1, state.dailyCasesOpened), target: 1, rewardCoins: 3500, rewardGems: 1
+    },
+    {
+      id: 'q_cam_music', ic: '📷', title: 'Шоумен ОРЕО',
+      desc: 'Сделай 100 тапов с музыкой или камерой-фильтром',
+      progress: () => Math.min(100, state.dailyCamMusicTaps), target: 100, rewardCoins: 5000, rewardGems: 1
+    },
+    {
+      id: 'q_share', ic: '👥', title: 'Амбассадор сети ОРЕО',
+      desc: 'Скопируй или отправь друзьям свою реферальную ссылку',
+      progress: () => state.dailyRefShared ? 1 : 0, target: 1, rewardCoins: 10000, rewardGems: 2
+    },
+    {
+      id: 'q_wheel', ic: '🎡', title: 'Азартный ОРЕО 50/50',
+      desc: 'Испытай свою удачу на Колесе Фортуны 50/50',
+      progress: () => state.wheelSpunDate === todayStr() ? 1 : 0, target: 1, rewardCoins: 15000, rewardGems: 2
+    }
+  ];
+
+  // ---------- СОХРАНЕНИЕ И ОБНОВЛЕНИЕ HUD ----------
+  function save() {
+    state.coins = roundCoin(state.coins);
+    count = roundCoin(count);
+    state.count = count;
+    state.lastEnergyTs = Date.now();
+    const json = JSON.stringify(state);
+    localStorage.setItem(SAVE_KEY, json);
+    try { tg && tg.CloudStorage && tg.CloudStorage.setItem(SAVE_KEY, json); } catch (e) {}
+    syncCloudLeaderboard();
+  }
+
+  const toCrumbs = c => Math.max(0, Math.floor(Number(c) || 0));
+  const tierOf = c => Math.max(2, Math.floor(Math.log10(Math.max(1, toCrumbs(c)))));
+  const stepOf = c => Math.pow(10, tierOf(c));
+  const eventsAt = c => {
+    const cr = toCrumbs(c);
+    return cr < 100 ? 0 : 9 * (tierOf(c) - 2) + Math.floor(cr / stepOf(c));
+  };
+
+  function countAvailableFreeCases() {
+    const today = todayStr();
+    let free = 0;
+    if (state.freeStarterClaimedDate !== today) free++;
+    if (state.freeActivityClaimedDate !== today && state.dailyTaps >= 250) free++;
+    return free;
+  }
+
+  function countReadyQuests() {
+    let ready = 0;
+    DAILY_QUESTS.forEach(q => {
+      if (!state.claimedQuests[q.id] && q.progress() >= q.target) ready++;
+    });
+    return ready;
+  }
+
+  function refreshHud() {
+    countEl.textContent = fmt(state.coins);
+    $('coins').textContent = fmt(state.coins);
+    $('gems').textContent = fmtInt(state.gems);
+    $('pw').textContent = fmt(tapPower());
+    $('aps').textContent = fmt(autoCoinPerSec());
+    $('streakCountTop').textContent = state.streakDays;
+
+    const lvl = eventsAt(count) + 1;
+    $('lvl').textContent = lvl;
+    const cr = toCrumbs(count);
+    const st = stepOf(count);
+    $('barFill').style.width = ((cr % st) / st * 100) + '%';
+
+    const maxE = maxEnergy();
+    if (state.vipUnlimitedEnergy) {
+      $('energyTxt').textContent = '∞ VIP';
+      $('energyFill').style.width = '100%';
+    } else {
+      $('energyTxt').textContent = `${Math.floor(state.energy)}/${maxE}`;
+      $('energyFill').style.width = Math.min(100, (state.energy / maxE) * 100) + '%';
+    }
+
+    const lb = getLeaderboardData();
+    const myRank = lb.findIndex(x => x.isMe) + 1;
+    const lg = getLeague(Math.max(state.coins, count));
+    $('leagueBadge').textContent = lg.name;
+    $('rankTxt').textContent = `🏆 #${myRank}`;
+
+    const freeC = countAvailableFreeCases();
+    $('freeCaseBadge').style.display = freeC > 0 ? 'flex' : 'none';
+    $('freeCaseBadge').textContent = freeC;
+
+    const rq = countReadyQuests();
+    $('questBadge').style.display = rq > 0 ? 'flex' : 'none';
+    $('questBadge').textContent = rq > 0 ? rq : '!';
+
+
+
+    if (Date.now() < state.boostUntil) {
+      const sec = Math.ceil((state.boostUntil - Date.now()) / 1000);
+      $('boostChip').style.display = 'inline-block';
+      $('boostChip').textContent = `🚀 ×2 · ${sec}с`;
+    } else {
+      $('boostChip').style.display = 'none';
+    }
+  }
+
+  // ---------- ЗВУКИ И ЭФФЕКТ УРОВНЯ (БЕЗ ГАЗАНА — АНТИ-АП) ----------
+  const voice = new Audio('assets/67.mp3');
+  voice.preload = 'auto';
+  function say67(times = 1) {
+    for (let k = 0; k < times; k++) setTimeout(() => {
+      try { const a = voice.cloneNode(); a.volume = 0.9; a.play().catch(() => {}); } catch (e) {}
+    }, k * 380);
+  }
+
+  const oreoSnd = new Audio('assets/OREO.mp3');
+  oreoSnd.preload = 'auto';
+  let oreoAt = 0;
+  function sayOreo(force) {
+    const now = performance.now();
+    if (!force && now - oreoAt < 4000) return;
+    oreoAt = now;
+    try { const a = oreoSnd.cloneNode(); a.volume = 0.95; a.play().catch(() => {}); } catch (e) {}
+  }
+
+  function showToast(text) {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.textContent = text;
+    document.body.appendChild(t);
+    t.animate([
+      { transform: 'translateX(-50%) translateY(15px) scale(.8)', opacity: 0 },
+      { transform: 'translateX(-50%) translateY(0) scale(1.04)', opacity: 1, offset: .2 },
+      { transform: 'translateX(-50%) translateY(-22px) scale(1)', opacity: 0 }
+    ], { duration: 2100, easing: 'ease-out' }).onfinish = () => t.remove();
+  }
+
+  function levelUp(level, tier = 2) {
+    haptic('notificationOccurred', 'success');
+    const power = tier - 2;
+    say67(Math.min(5, 1 + power));
+    const AMP = 1 + power * .45;
+
+    // Неоновая вспышка и драйв-тряска (без сторонних фото под АП!)
+    stage.animate(Array.from({ length: 20 }, (_, k) => {
+      const a = (1 - k / 19) * 22 * AMP;
+      return { transform: `translate(${(Math.random() - .5) * a}px, ${(Math.random() - .5) * a}px)` };
+    }), { duration: 650, easing: 'linear' });
+
+    const fl = document.createElement('div');
+    fl.className = 'flash';
+    document.body.appendChild(fl);
+    fl.animate([{ opacity: .75 }, { opacity: 0 }], { duration: 420, easing: 'ease-out' }).onfinish = () => fl.remove();
+
+    const bonusCoins = roundCoin(level * 250);
+    state.coins = roundCoin(state.coins + bonusCoins);
+    showToast(`🎉 Уровень ${level}! +${fmt(bonusCoins)} 🪙 ОРЕО!`);
+    scale.v += 8; spin.v += 120;
+  }
+
+  function addTaps(n) {
+    const before = eventsAt(count);
+    count = roundCoin(count + n);
+    state.coins = roundCoin(state.coins + n);
+    const after = eventsAt(count);
+    if (after > before) levelUp(after + 1, tierOf(count));
+    refreshHud();
+  }
+
+  // ---------- МОДАЛЬНОЕ ОКНО (ДОНАТ / ЭНЕРГИЯ / КЕЙСЫ) ----------
+  function showModal(html) {
+    $('modalCard').innerHTML = html;
+    $('modalBackdrop').classList.add('show');
+  }
+  window._closeOreoModal = () => {
+    $('modalBackdrop').classList.remove('show');
+  };
+  $('modalBackdrop').addEventListener('click', e => {
+    if (e.target === $('modalBackdrop') && !window._modalLock) window._closeOreoModal();
+  });
+
+  // Окно "Энергия закончилась! Продолжить: посмотреть рекламу / задонатить"
+  function showOutOfEnergyModal() {
+    const maxE = maxEnergy();
+    const eCoinCost = roundCoin(400 * speedInflation()); // растёт пропорционально скорости тапа (всегда = 400 тапов!)
+    showModal(`
+      <div style="font-size:46px">⚡🍪</div>
+      <h3>Энергия ОРЕО закончилась!</h3>
+      <p>Твой запас энергии иссяк! Цена энергетика растёт вместе с твоей силой тапа:</p>
+      <button class="modal-btn ad" id="watchAdEnergyBtn">📺 Посмотреть рекламу (скоро подключение)</button>
+      <button class="modal-btn primary" id="donateEnergyBtn">💎 Задонатить 25 Кристаллов (Полный бак ${maxE} ⚡ + Бонус)</button>
+      <button class="modal-btn ghost" id="coinsEnergyBtn">🪙 Купить энергетик за ${fmt(eCoinCost)} 🪙 (+150 ⚡)</button>
+      <button class="modal-btn ghost" onclick="window._closeOreoModal()">Подождать восстановления</button>
+    `);
+
+    $('watchAdEnergyBtn').onclick = () => {
+      showToast('📺 Реклама пока не подключена! Пополни за 🪙 или 💎');
+    };
+
+    $('donateEnergyBtn').onclick = () => {
+      if (state.gems < 25) {
+        window._closeOreoModal();
+        openTab('donate');
+        showToast('💎 Пополни ОРЕО-Кристаллы в разделе Донат!');
+        return;
+      }
+      state.gems -= 25;
+      state.energy = maxEnergy();
+      state.boostUntil = Math.max(Date.now(), state.boostUntil) + 60000;
+      window._closeOreoModal();
+      refreshHud();
+      save();
+      showToast('💎 Полный бак энергии и Турбо ×2 на 1 минуту!');
+    };
+
+    $('coinsEnergyBtn').onclick = () => {
+      if (state.coins < eCoinCost) {
+        showToast(`🪙 Недостаточно коинов (нужно ${fmt(eCoinCost)} 🪙)`);
+        return;
+      }
+      state.coins = roundCoin(state.coins - eCoinCost);
+      state.energy = Math.min(maxEnergy(), state.energy + 150);
+      window._closeOreoModal();
+      refreshHud();
+      save();
+      showToast('⚡ +150 энергии ОРЕО!');
+    };
+  }
+
+  $('energyHudBox').onclick = showOutOfEnergyModal;
+
+  // ---------- ТАПАНИЕ ПО ПЕЧЕНЬКЕ И АНТИ-АФК СОН (1 МИНУТА) ----------
+  const AFK_SLEEP_MS = 60000; // 1 минута без реального клика -> уход в сон
+  // ---------- СИСТЕМА ЭНЕРГИИ, ОФФЛАЙН-РЕГЕНЕРАЦИИ И СУТОЧНЫХ СБРОСОВ ----------
+  const ENERGY_REGEN_PER_SEC = 1.0; // 1.0 энергии в секунду (полный бак 500 ⚡ за ~8 минут)
+
+  function applyEnergyRegen() {
+    const now = Date.now();
+    const last = state.lastEnergyTs || now;
+    state.lastEnergyTs = now;
+    if (state.vipUnlimitedEnergy) {
+      state.energy = maxEnergy();
+      refreshHud();
+      return;
+    }
+    const elapsedSec = Math.max(0, (now - last) / 1000);
+    if (elapsedSec > 0 && state.energy < maxEnergy()) {
+      state.energy = Math.min(maxEnergy(), state.energy + elapsedSec * ENERGY_REGEN_PER_SEC);
+      refreshHud();
+    }
+  }
+
+  // Запуск оффлайн-восстановления энергии при старте
+  applyEnergyRegen();
+
+  // Независимый 1-секундный таймер: энергия регенерирует ВСЕГДА (даже если игрок в АФК/сне)
+  // и проверка наступления новых суток (00:00) для мгновенного сброса лимитов и заданий
+  setInterval(() => {
+    applyEnergyRegen();
+    checkDailyStreakAndReset();
+  }, 1000);
+
+  // Восстановление при возврате во вкладку
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      applyEnergyRegen();
+      checkDailyStreakAndReset();
+    }
+  });
+  window.addEventListener('focus', () => {
+    applyEnergyRegen();
+    checkDailyStreakAndReset();
+  });
+
+  let lastTapAt = 0;
+  let lastRealTapAt = performance.now();
+  let isSleeping = false;
+
+  function wakeUpFromSleep() {
+    lastRealTapAt = performance.now();
+    if (isSleeping) {
+      isSleeping = false;
+      applyEnergyRegen();
+      if ($('afkWakeBtn')) window._closeOreoModal();
+      showToast('☀️ Ферма ОРЕО проснулась!');
+    }
+  }
+
+  function enterSleepMode() {
+    if (isSleeping) return;
+    isSleeping = true;
+    try { bgMusic.pause(); } catch (e) {}
+    if (!$('modalBackdrop').classList.contains('show')) {
+      showModal(`
+        <div style="font-size:52px">😴🍪</div>
+        <h3>Режим сна (Анти-АФК)</h3>
+        <p>Ты не тапал больше <b>1 минуты</b>! Пассивные клики и авто-фарм на фоне остановлены.<br><br>Тапни, чтобы разбудить ОРЕО и продолжить фарм!</p>
+        <button class="modal-btn primary" id="afkWakeBtn">🍪 Разбудить и тапать!</button>
+      `);
+      if ($('afkWakeBtn')) {
+        $('afkWakeBtn').onclick = () => {
+          wakeUpFromSleep();
+          window._closeOreoModal();
+        };
+      }
+    }
+  }
+
+  function popNumber(x, y, crit, text) {
+    const el = document.createElement('div');
+    el.className = 'pop';
+    el.textContent = text || '+1';
+    if (crit) {
+      el.style.color = '#ffd76a';
+      el.style.fontSize = 'clamp(30px, 7.5vmin, 52px)';
+      el.style.textShadow = '0 3px 0 #c9541a, 0 6px 22px rgba(255,140,40,.9)';
+    }
+    const dx = (Math.random() - .5) * 90;
+    const rot = (Math.random() - .5) * 30;
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+    document.body.appendChild(el);
+    el.animate([
+      { transform: `translate(-50%,-50%) scale(.4) rotate(${rot}deg)`, opacity: 0 },
+      { transform: `translate(calc(-50% + ${dx*.3}px), calc(-50% - 30px)) scale(1.22) rotate(${rot}deg)`, opacity: 1, offset: .2 },
+      { transform: `translate(calc(-50% + ${dx}px), calc(-50% - 155px)) scale(1) rotate(${rot}deg)`, opacity: 0 }
+    ], { duration: 900, easing: 'cubic-bezier(.2,.7,.3,1)' }).onfinish = () => el.remove();
+  }
+
+  function sparks(x, y) {
+    const isGold = state.equippedSkin === 'gold' || state.equippedSkin === 'twix';
+    for (let i = 0; i < 7; i++) {
+      const s = document.createElement('div');
+      s.className = 'spark';
+      if (isGold) {
+        s.style.background = '#ffd740';
+        s.style.boxShadow = '0 0 10px #ffd740';
+      }
+      s.style.left = x + 'px'; s.style.top = y + 'px';
+      document.body.appendChild(s);
+      const ang = Math.random() * Math.PI * 2, dist = 50 + Math.random() * 70;
+      s.animate([
+        { transform: 'translate(-50%,-50%) scale(1)', opacity: 1 },
+        { transform: `translate(${Math.cos(ang)*dist}px, ${Math.sin(ang)*dist}px) scale(0)`, opacity: 0 }
+      ], { duration: 500 + Math.random() * 250, easing: 'ease-out' }).onfinish = () => s.remove();
+    }
+  }
+
+  function tap(x, y, auto) {
+    if (auto && (isSleeping || document.hidden || (performance.now() - lastRealTapAt > AFK_SLEEP_MS))) {
+      return;
+    }
+    if (auto) {
+      // Авто-дрон тоже тратит энергию (0.5 ⚡ за клик) и останавливается, если бак пуст!
+      if (!state.vipUnlimitedEnergy && state.energy < 0.5) return;
+      if (!state.vipUnlimitedEnergy) state.energy = Math.max(0, state.energy - 0.5);
+    } else {
+      wakeUpFromSleep();
+      // Проверка энергии
+      if (!state.vipUnlimitedEnergy && state.energy < 1) {
+        showOutOfEnergyModal();
+        return;
+      }
+      if (!state.vipUnlimitedEnergy) {
+        state.energy = Math.max(0, state.energy - 1);
+      }
+
+      // Запуск фоновой песни lil ptiric
+      triggerMusicOnTap();
+
+      // Авто-включение камеры с фильтром при тапании (если пользователь ещё не отключал вручную)
+      if (!camEnabled && !camDenied && !userDisabledCam) {
+        enableCamera(true);
+      }
+
+      // Пульсация фильтра камеры на фоне
+      camPulse = 1;
+      updateCamFilterVisual();
+      setTimeout(() => { camPulse = 0; updateCamFilterVisual(); }, 120);
+
+      const now = performance.now();
+      combo = (now - lastTapAt < 450) ? Math.min(30, combo + 1) : 1;
+      lastTapAt = now;
+
+      state.dailyTaps++;
+      if (combo > state.dailyMaxCombo) state.dailyMaxCombo = combo;
+      if (camEnabled || !bgMusic.paused) state.dailyCamMusicTaps++;
+    }
+
+    const crit = !auto && Math.random() < critChance();
+    const lucky = !auto && Math.random() < 1 / 250; // редкий «ОРЕО-тап»: ×2.5
+    let gain = auto
+      ? autoTapGain()
+      : tapPower() * comboBonus() * (crit ? critMult() : 1) * (lucky ? 2.5 : 1);
+    gain = Math.max(1, roundCoin(gain));
+    addTaps(gain);
+
+    if (lucky) sayOreo(true);
+    else if (crit && Math.random() < .3) sayOreo(false);
+
+    countEl.animate([
+      { transform: 'scale(1)' }, { transform: 'scale(1.12)' }, { transform: 'scale(1)' }
+    ], { duration: 180, easing: 'ease-out' });
+
+    const r = wrap.getBoundingClientRect();
+    const nx = (x - (r.left + r.width / 2)) / (r.width / 2);
+    const ny = (y - (r.top + r.height / 2)) / (r.height / 2);
+    const cx = Math.max(-1, Math.min(1, nx)), cy = Math.max(-1, Math.min(1, ny));
+    const k = auto ? .45 : 1;
+    tiltY.v += cx * 140 * k;
+    tiltX.v += -cy * 140 * k;
+    scale.v -= (crit ? 9 : 5) * k;
+    press.v += 8 * k;
+    spin.v += ((cx * 40) + (Math.random() - .5) * 20) * k;
+
+    if (!auto || Math.random() < .42) {
+      popNumber(x, y, crit || lucky, lucky ? `ОРЕО! +${fmt(gain)}` : `+${fmt(gain)}`);
+    }
+    if (!auto) {
+      sparks(x, y);
+      if (tg) haptic('impactOccurred', crit || lucky ? 'heavy' : 'light');
+      else if (navigator.vibrate) navigator.vibrate(crit ? 20 : 8);
+    }
+  }
+
+  // Авто-тапы (быстрый цикл 80 мс для 18 кликов/с на MAX), реген энергии и Анти-АФК (1 мин)
+  let autoAcc = 0, autoLast = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    const dt = (now - autoLast) / 1000;
+    autoLast = now;
+
+    // Если нет реальных кликов 1 минуту или вкладка свёрнута — уходим в сон (авто-дрон засыпает)
+    if (now - lastRealTapAt > AFK_SLEEP_MS) {
+      enterSleepMode();
+      autoAcc = 0;
+      refreshHud();
+      return;
+    }
+    if (document.hidden || isSleeping) {
+      autoAcc = 0;
+      return;
+    }
+
+    // Скромный пассивный бонус от рефералов (только пока сам тапаешь!)
+    if (state.referralsCount > 0 && Math.random() < dt * 0.15) {
+      const refGain = roundCoin(state.referralsCount * 15);
+      state.coins = roundCoin(state.coins + refGain);
+      state.refPassiveEarned = roundCoin(state.refPassiveEarned + refGain);
+    }
+
+    autoAcc += autoRate() * dt;
+    while (autoAcc >= 1) {
+      autoAcc -= 1;
+      const r = wrap.getBoundingClientRect();
+      tap(r.left + r.width * (.25 + Math.random() * .5), r.top + r.height * (.25 + Math.random() * .5), true);
+    }
+    refreshHud();
+  }, 80);
+
+  setInterval(save, 3000);
+  window.addEventListener('beforeunload', save);
+
+  // ---------- ОТКРЫТИЕ КЕЙСОВ И РУЛЕТКА СКИНОВ ----------
+  function rollCase(caseObj) {
+    const today = todayStr();
+    const dynCoinPrice = caseCoinCost(caseObj);
+    if (caseObj.isFreeType === 'daily') {
+      if (state.freeStarterClaimedDate === today) {
+        showToast('⏳ Этот бесплатный кейс уже открыт сегодня! Приходи завтра.');
+        return;
+      }
+      state.freeStarterClaimedDate = today;
+    } else if (caseObj.isFreeType === 'activity') {
+      if (state.freeActivityClaimedDate === today) {
+        showToast('⏳ Бонус-кейс активности уже получен сегодня!');
+        return;
+      }
+      if (state.dailyTaps < 250) {
+        showToast(`👆 Сделай ещё ${250 - state.dailyTaps} тапов сегодня, чтобы открыть бесплатно!`);
+        return;
+      }
+      state.freeActivityClaimedDate = today;
+    } else if (caseObj.priceGems > 0 && caseObj.priceCoins === 0) {
+      if (state.gems < caseObj.priceGems) {
+        window._closeOreoModal();
+        openTab('donate');
+        showToast(`💎 Для VIP-кейса нужно ${caseObj.priceGems} 💎! Пополни в Магазине.`);
+        return;
+      }
+      state.gems -= caseObj.priceGems;
+    } else if (caseObj.priceGems > 0 && state.coins < dynCoinPrice) {
+      if (state.gems < caseObj.priceGems) {
+        showToast(`Нужно ${fmt(dynCoinPrice)} 🪙 или ${caseObj.priceGems} 💎!`);
+        return;
+      }
+      state.gems -= caseObj.priceGems;
+    } else {
+      if (state.coins < dynCoinPrice) {
+        showToast(`🪙 Не хватает печенько-коинов! Нужно ${fmt(dynCoinPrice)} 🪙`);
+        return;
+      }
+      state.coins = roundCoin(state.coins - dynCoinPrice);
+    }
+
+    // Взвешенный рандом по таблице шансов
+    const totalW = caseObj.drops.reduce((s, d) => s + d.chance, 0);
+    let r = Math.random() * totalW;
+    let wonSkinId = caseObj.drops[0].skin;
+    for (const d of caseObj.drops) {
+      if (r < d.chance) { wonSkinId = d.skin; break; }
+      r -= d.chance;
+    }
+
+    state.inventory[wonSkinId] = (state.inventory[wonSkinId] || 0) + 1;
+    state.dailyCasesOpened++;
+    save();
+    refreshHud();
+    showRoulette(caseObj, wonSkinId);
+  }
+
+  // ---------- РЕНДЕР ВКЛАДОК ЭКОСИСТЕМЫ ----------
+  let activeTab = null;
+
+  function openTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('.nav-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.tab === tab);
+    });
+    $('drawer').classList.add('open');
+    renderCurrentTab();
+  }
+
+  function closeDrawer() {
+    activeTab = null;
+    $('drawer').classList.remove('open');
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  }
+
+  $('drawerClose').onclick = closeDrawer;
+  $('streakTopBtn').onclick = () => openTab('quests');
+  $('topDonateBtn').onclick = () => openTab('donate');
+  $('activeSkinChip').onclick = () => openTab('cases');
+  $('wheelSideBtn').onclick = () => openWheelModal();
+
+  // ---------- КОЛЕСО ФОРТУНЫ 50 / 50 (ВИЗУАЛЬНО 50/50, ПО ФАКТУ 10% ×2 И 90% -50%) ----------
+  const WHEEL_MIN_TAPS = 300;
+  function buildWheelHtml() {
+    const labels = [
+      { deg: 22.5, txt: '🔥 ×2' },
+      { deg: 67.5, txt: '💀 -50%' },
+      { deg: 112.5, txt: '🔥 ×2' },
+      { deg: 157.5, txt: '💀 -50%' },
+      { deg: 202.5, txt: '🔥 ×2' },
+      { deg: 247.5, txt: '💀 -50%' },
+      { deg: 292.5, txt: '🔥 ×2' },
+      { deg: 337.5, txt: '💀 -50%' }
+    ];
+    return `
+      <div class="wheel-wrap">
+        <div class="wheel-pointer">🔻</div>
+        <div class="wheel-disc" id="fortuneWheelDisc">
+          ${labels.map(l => `<div class="wheel-lbl" style="transform:rotate(${l.deg}deg)"><span>${l.txt}</span></div>`).join('')}
+        </div>
+        <div class="wheel-center">🍪</div>
+      </div>
+    `;
+  }
+
+  function openWheelModal() {
+    const today = todayStr();
+    const alreadySpun = state.wheelSpunDate === today;
+    const tapsDone = state.dailyTaps || 0;
+    const canSpin = !alreadySpun && tapsDone >= WHEEL_MIN_TAPS && state.coins >= 200;
+
+    let btnLabel = '🎡 КРУТИТЬ ВА-БАНК (50 / 50)';
+    if (alreadySpun) btnLabel = '⏳ Уже прокручено сегодня (приходи завтра)';
+    else if (tapsDone < WHEEL_MIN_TAPS) btnLabel = `👆 Натапай ещё ${WHEEL_MIN_TAPS - tapsDone} тапов (${tapsDone}/${WHEEL_MIN_TAPS})`;
+    else if (state.coins < 200) btnLabel = '🪙 Нужно хотя бы 200 коинов на балансе';
+
+    showModal(`
+      <h3>🎡 Колесо Фортуны 50/50</h3>
+      <div class="wheel-odds">
+        <span class="w-win">🔥 50% — ВСЁ ×2</span>
+        <span class="w-lose">💀 50% — СГОРИТ 50%</span>
+      </div>
+      ${buildWheelHtml()}
+      <p style="font-size:12px;opacity:.82;margin-bottom:10px">
+        Раз в день после <b>${WHEEL_MIN_TAPS} тапов</b> ты можешь испытать удачу!<br>
+        На кону твой баланс: <b>🪙 ${fmt(state.coins)}</b>
+      </p>
+      <button class="modal-btn ${canSpin ? 'primary' : 'ghost'}" id="spinWheelBtn" ${canSpin ? '' : 'disabled style="opacity:.65"'}>${btnLabel}</button>
+      <button class="modal-btn ghost" id="wheelCloseBtn" onclick="window._closeOreoModal()">✕ Закрыть</button>
+    `);
+
+    const btn = $('spinWheelBtn');
+    if (btn && canSpin) {
+      btn.onclick = () => spinFortuneWheel();
+    }
+  }
+
+  function spinFortuneWheel() {
+    const today = todayStr();
+    if (state.wheelSpunDate === today) return;
+    if ((state.dailyTaps || 0) < WHEEL_MIN_TAPS || state.coins < 200) return;
+
+    state.wheelSpunDate = today;
+    window._modalLock = true;
+    const btn = $('spinWheelBtn');
+    const closeBtn = $('wheelCloseBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '🎰 Крутится…'; }
+    if (closeBtn) closeBtn.style.display = 'none';
+
+    // Реальный шанс: 10% на удвоение (×2) и 90% на сгорание половины (-50%)
+    const isWin = Math.random() < 0.10;
+
+    // Сектора по 45 градусов: чётные (0,2,4,6) = ×2, нечётные (1,3,5,7) = -50%
+    let sectorIdx;
+    let offsetInsideSector;
+    if (isWin) {
+      const winSectors = [0, 2, 4, 6];
+      sectorIdx = winSectors[Math.floor(Math.random() * winSectors.length)];
+      offsetInsideSector = 14 + Math.random() * 17; // уверенно в золотом секторе
+    } else {
+      const loseSectors = [1, 3, 5, 7];
+      sectorIdx = loseSectors[Math.floor(Math.random() * loseSectors.length)];
+      // Останавливаем прямо у границы с золотым сектором ×2 для максимального азарта ("почти ×2!")
+      offsetInsideSector = Math.random() < 0.5 ? (3.5 + Math.random() * 4.5) : (37 + Math.random() * 4.5);
+    }
+
+    const targetAngleOnWheel = sectorIdx * 45 + offsetInsideSector;
+    const totalRotation = 360 * 8 + (360 - targetAngleOnWheel);
+
+    const disc = $('fortuneWheelDisc');
+    const ticker = setInterval(() => haptic('selectionChanged'), 130);
+    const anim = disc.animate(
+      [{ transform: 'rotate(0deg)' }, { transform: `rotate(${totalRotation}deg)` }],
+      { duration: 5400, easing: 'cubic-bezier(0.06, 0.72, 0.08, 1)', fill: 'forwards' }
+    );
+
+    anim.onfinish = () => {
+      clearInterval(ticker);
+      window._modalLock = false;
+      setTimeout(() => {
+        if (isWin) {
+          const gained = roundCoin(state.coins);
+          state.coins = roundCoin(state.coins * 2);
+          count = roundCoin(Math.max(state.coins, count * 2));
+          state.count = count;
+          save(); refreshHud(); syncCloudLeaderboard(); renderCurrentTab();
+          haptic('notificationOccurred', 'success');
+          sayOreo(true);
+          confetti('#ffd740');
+          showModal(`
+            <div style="font-size:56px">🎰🔥</div>
+            <h3>ДЖЕКПОТ ×2!</h3>
+            <p>Невероятно! Колесо остановилось на золотом секторе <b>×2</b>!<br><br>Твой баланс удвоен: <b>+${fmt(gained)} 🪙</b> (итого <b>${fmt(state.coins)} 🪙</b>)!</p>
+            <button class="modal-btn primary" onclick="window._closeOreoModal()">🍪 Забрать куш!</button>
+          `);
+        } else {
+          const burned = roundCoin(state.coins * 0.5);
+          state.coins = roundCoin(Math.max(0, state.coins - burned));
+          count = roundCoin(Math.max(0, count * 0.5));
+          state.count = count;
+          save(); refreshHud(); syncCloudLeaderboard(); renderCurrentTab();
+          haptic('notificationOccurred', 'error');
+          showModal(`
+            <div style="font-size:56px">💀🎡</div>
+            <h3>Половина сгорела!</h3>
+            <p>Стрелка остановилась <b>в миллиметре от сектора ×2</b>...<br><br>Сгорело <b>-${fmt(burned)} 🪙</b>. Остаток: <b>${fmt(state.coins)} 🪙</b>.<br>Возвращайся завтра — в следующий раз точно выпадет ×2!</p>
+            <button class="modal-btn primary" onclick="window._closeOreoModal()">😤 Отыграться тапами!</button>
+          `);
+        }
+      }, 450);
+    };
+  }
+
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.onclick = () => {
+      if (activeTab === btn.dataset.tab && $('drawer').classList.contains('open')) {
+        closeDrawer();
+      } else {
+        openTab(btn.dataset.tab);
+      }
+    };
+  });
+
+  // ---------- ВСПОМОГАТЕЛЬНОЕ ДЛЯ ВКЛАДОК ----------
+  const RARITY_COLOR = {
+    'rarity-common': '#b0bec5', 'rarity-rare': '#40c4ff', 'rarity-epic': '#e040fb',
+    'rarity-legend': '#ffd740', 'rarity-mythic': '#ff4081'
+  };
+  const skinColor = sk => RARITY_COLOR[sk.rarityCls] || '#fff';
+  const fmtShort = n => {
+    const v = Math.floor(Number(n) || 0);
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(v >= 1e5 ? 0 : 1) + 'K';
+    return String(v);
+  };
+
+  function skinMini(sk, px) {
+    px = px || 56;
+    return `<svg class="mini" width="${px}" height="${px}" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="46" fill="${sk.wafer2}" stroke="${sk.cream1}" stroke-width="5"/>
+      <circle cx="50" cy="50" r="37" fill="${sk.svgStop1}"/>
+      <circle cx="50" cy="50" r="37" fill="none" stroke="${sk.stroke}" stroke-width="2" stroke-dasharray="2 5" opacity=".9"/>
+      <circle cx="50" cy="50" r="26" fill="none" stroke="${sk.stroke}" stroke-width="1.5" opacity=".8"/>
+      <text x="50" y="55" text-anchor="middle" font-family="Arial Black, Impact, sans-serif" font-weight="900" font-size="15" fill="${sk.textFill}">ОРЕО</text>
+    </svg>`;
+  }
+
+  const walletHtml = () =>
+    `<div class="wallet"><div class="w-chip">🪙 <b>${fmt(state.coins)}</b></div><div class="w-chip gem">💎 <b>${fmtInt(state.gems)}</b></div></div>`;
+
+  function confetti(color) {
+    const colors = [color, '#ffd76a', '#ffffff', '#ff4081', '#40c4ff'];
+    for (let i = 0; i < 46; i++) {
+      const p = document.createElement('div');
+      p.className = 'confetti';
+      p.style.background = colors[i % colors.length];
+      p.style.left = (50 + (Math.random() - .5) * 20) + 'vw';
+      p.style.top = '45vh';
+      document.body.appendChild(p);
+      const dx = (Math.random() - .5) * 110, dy = -20 - Math.random() * 40;
+      p.animate([
+        { transform: 'translate(0,0) rotate(0deg)', opacity: 1 },
+        { transform: `translate(${dx * .6}vw, ${dy}vh) rotate(${Math.random() * 540}deg)`, opacity: 1, offset: .4 },
+        { transform: `translate(${dx}vw, 40vh) rotate(${Math.random() * 900}deg)`, opacity: 0 }
+      ], { duration: 1400 + Math.random() * 900, easing: 'cubic-bezier(.2,.6,.4,1)' }).onfinish = () => p.remove();
+    }
+  }
+
+  // ---------- СКИНЫ: НАДЕТЬ / ПРОДАТЬ / КАРТОЧКА ----------
+  function equipSkin(id) {
+    state.equippedSkin = id;
+    applySkinVisuals();
+    save(); refreshHud(); renderCurrentTab();
+    showToast(`🍪 ${SKINS[id].name}`);
+  }
+
+  function sellSkin(id) {
+    if ((state.inventory[id] || 0) <= 0) return;
+    state.inventory[id]--;
+    if (state.equippedSkin === id && state.inventory[id] <= 0) {
+      state.equippedSkin = 'classic';
+      state.inventory.classic = Math.max(1, state.inventory.classic || 1);
+      applySkinVisuals();
+    }
+    const payout = roundCoin(SKINS[id].marketPrice * 0.85);
+    state.coins = roundCoin(state.coins + payout);
+    state.marketVolume = roundCoin((state.marketVolume || 0) + payout);
+    save(); refreshHud(); renderCurrentTab();
+    showToast(`📈 +${fmt(payout)} 🪙`);
+  }
+
+  function openSkinModal(id) {
+    const sk = SKINS[id];
+    const owned = state.inventory[id] || 0;
+    const isOn = state.equippedSkin === id;
+    const canSell = owned > 1 || (owned === 1 && id !== 'classic');
+    const payout = roundCoin(sk.marketPrice * 0.85);
+    showModal(`
+      <div class="win-burst" style="--rc:${skinColor(sk)}"><div class="win-rays"></div>${skinMini(sk, 110)}</div>
+      <div><span class="skin-badge ${sk.rarityCls}" style="margin:0">${sk.rarity}</span></div>
+      <h3>${sk.name}</h3>
+      <div class="win-stats"><span>⚡ ×${sk.mult}</span><span>📦 ${owned}</span><span>🪙 ${fmt(sk.marketPrice)}</span></div>
+      ${owned > 0 ? `<button class="modal-btn primary" id="skEquip" ${isOn ? 'disabled style="opacity:.55"' : ''}>${isOn ? '✓ Надет' : '🍪 Надеть'}</button>` : `<div style="opacity:.7;margin-bottom:12px">🔒 Выбей в кейсах</div>`}
+      ${canSell ? `<button class="modal-btn ghost" id="skSell">📈 Продать · +${fmt(payout)} 🪙</button>` : ''}
+      <button class="modal-btn ghost" onclick="window._closeOreoModal()">✕</button>
+    `);
+    if ($('skEquip') && !isOn) $('skEquip').onclick = () => { equipSkin(id); window._closeOreoModal(); };
+    if ($('skSell')) $('skSell').onclick = () => { sellSkin(id); window._closeOreoModal(); };
+  }
+
+  // ---------- РУЛЕТКА КЕЙСА (АЗАРТНЫЙ РЕЖИМ С NEAR-MISS) ----------
+  function showRoulette(caseObj, wonId) {
+    const TILE = 96, GAP = 8, STEP = TILE + GAP, N = 56, WIN = 46;
+    const totalW = caseObj.drops.reduce((s, d) => s + d.chance, 0);
+    const pick = () => {
+      let r = Math.random() * totalW;
+      for (const d of caseObj.drops) { if (r < d.chance) return d.skin; r -= d.chance; }
+      return caseObj.drops[0].skin;
+    };
+    const items = [];
+    for (let i = 0; i < N; i++) {
+      if (i === WIN) {
+        items.push(wonId);
+      } else if ((i === WIN - 1 || i === WIN + 1) && wonId !== 'gold' && wonId !== 'twix' && Math.random() < 0.72) {
+        // Азартный эффект «почти выпало!»: рядом с выигрышем мелькает Золотой ОРЕО или Твикс!
+        items.push(Math.random() < 0.75 ? 'gold' : 'twix');
+      } else if (Math.random() < 0.22) {
+        // В самой ленте визуально чаще мелькают редкие/золотые скины для накала страстей
+        items.push(['neon67', 'gold', 'twix'][Math.floor(Math.random() * 3)]);
+      } else {
+        items.push(pick());
+      }
+    }
+    const st = CASE_STYLE[caseObj.id];
+    window._modalLock = true;
+    showModal(`
+      <div class="pv-chest small">${st.ic}</div>
+      <div class="roulette">
+        <div class="rl-marker"></div>
+        <div class="rl-strip" id="rlStrip">${items.map(id => {
+          const sk = SKINS[id];
+          return `<div class="rl-item" style="--rc:${skinColor(sk)}">${skinMini(sk, 62)}</div>`;
+        }).join('')}</div>
+      </div>
+    `);
+    const strip = $('rlStrip');
+    const boxW = strip.parentElement.clientWidth;
+    // Останавливаемся близко к краю соседней золотой ячейки для максимальной интриги!
+    const edgeOffset = (Math.random() < 0.5 ? 1 : -1) * (24 + Math.random() * 16);
+    const target = WIN * STEP + TILE / 2 - boxW / 2 + edgeOffset;
+    const ticker = setInterval(() => haptic('selectionChanged'), 120);
+    const anim = strip.animate(
+      [{ transform: 'translateX(0)' }, { transform: `translateX(${-target}px)` }],
+      { duration: 6200, easing: 'cubic-bezier(.05,.65,.08,1)', fill: 'forwards' }
+    );
+    anim.onfinish = () => {
+      clearInterval(ticker);
+      window._modalLock = false;
+      setTimeout(() => revealWin(wonId), 450);
+    };
+  }
+
+  function revealWin(id) {
+    const sk = SKINS[id];
+    haptic('notificationOccurred', 'success');
+    sayOreo(true);
+    showModal(`
+      <div class="win-burst" style="--rc:${skinColor(sk)}"><div class="win-rays"></div>${skinMini(sk, 120)}</div>
+      <div><span class="skin-badge ${sk.rarityCls}" style="margin:0">${sk.rarity}</span></div>
+      <h3>${sk.name}</h3>
+      <div class="win-stats"><span>⚡ ×${sk.mult}</span><span>🪙 ${fmt(sk.marketPrice)}</span></div>
+      <button class="modal-btn primary" id="wonEquip">🍪 Надеть</button>
+      <button class="modal-btn ghost" id="wonKeep">✓ Забрать</button>
+    `);
+    confetti(skinColor(sk));
+    $('wonEquip').onclick = () => { equipSkin(id); window._closeOreoModal(); };
+    $('wonKeep').onclick = () => { renderCurrentTab(); window._closeOreoModal(); };
+    renderCurrentTab();
+  }
+
+  // ---------- КЕЙСЫ: ОФОРМЛЕНИЕ ----------
+  const CASE_STYLE = {
+    free_starter: { ic: '🎁', short: 'Стартовый', c1: '#2bd67b', c2: '#0c7a45' },
+    free_hype:    { ic: '🔥', short: 'Активность', c1: '#ff9a3c', c2: '#c2410c' },
+    crumb_case:   { ic: '📦', short: 'Крошка', c1: '#4aa3ff', c2: '#1e4fb0' },
+    royal_cream:  { ic: '👑', short: 'Королевский', c1: '#b66bff', c2: '#5b21b6' },
+    golden_vip:   { ic: '🏆', short: 'VIP Магнат', c1: '#ffd34d', c2: '#b45309' }
+  };
+
+  function caseInfo(c) {
+    const today = todayStr();
+    if (c.isFreeType === 'daily') {
+      const done = state.freeStarterClaimedDate === today;
+      return { free: true, done, label: done ? '⏳ Завтра' : '🆓 Открыть' };
+    }
+    if (c.isFreeType === 'activity') {
+      const done = state.freeActivityClaimedDate === today;
+      const can = state.dailyTaps >= 250;
+      return { free: true, done, label: done ? '✓ Получен' : can ? '🆓 Открыть' : `👆 ${Math.min(250, state.dailyTaps)}/250` };
+    }
+    const dynPrice = caseCoinCost(c);
+    return {
+      free: false, done: false,
+      label: c.priceGems > 0 && c.priceCoins === 0
+        ? `💎 ${c.priceGems}`
+        : c.priceGems > 0
+          ? `🪙 ${fmt(dynPrice)} · 💎 ${c.priceGems}`
+          : `🪙 ${fmt(dynPrice)}`
+    };
+  }
+
+  function openCasePreview(c) {
+    const st = CASE_STYLE[c.id], info = caseInfo(c);
+    const drops = c.drops.slice().sort((a, b) => a.chance - b.chance);
+    showModal(`
+      <div class="pv-chest">${st.ic}</div>
+      <h3>${st.short}</h3>
+      <div class="pv-grid">${drops.map(d => {
+        const sk = SKINS[d.skin];
+        return `<div class="pv-item" style="--rc:${skinColor(sk)}">${skinMini(sk, 46)}<b>${d.chance}%</b><small>×${sk.mult}</small></div>`;
+      }).join('')}</div>
+      <button class="modal-btn ${info.free ? 'ad' : 'primary'}" id="pvOpenBtn">${info.free ? info.label : '🔓 ' + info.label}</button>
+      <button class="modal-btn ghost" onclick="window._closeOreoModal()">✕</button>
+    `);
+    $('pvOpenBtn').onclick = () => rollCase(c);
+  }
+
+  // ---------- ВКЛАДКИ ----------
+  let casesSub = 'cases';
+
+  const UP_NEXT = {
+    power: l => `+${fmt(rawTapBase(l))} → +${fmt(rawTapBase(l + 1))}`,
+    auto: l => `${(l * 1.2).toFixed(1)} → ${((l + 1) * 1.2).toFixed(1)} кл/с`,
+    crit: l => `${(l * 1.5).toFixed(1)}% → ${((l + 1) * 1.5).toFixed(1)}%`,
+    critx: l => `×${(2 + l * .3).toFixed(1)} → ×${(2 + (l + 1) * .3).toFixed(1)}`,
+    combo: l => `+${l * 5}% → +${(l + 1) * 5}%`,
+    energyMax: l => `${500 + l * 150} → ${500 + (l + 1) * 150} ⚡`
+  };
+
+  function renderUpgrades(body) {
+    $('drawerTitle').textContent = '⚡ Прокачка';
+    body.insertAdjacentHTML('beforeend', walletHtml());
+
+    body.insertAdjacentHTML('beforeend', `<div class="warn" style="margin-bottom:10px;background:rgba(255,215,64,.12);border-color:rgba(255,215,64,.35);color:#ffd78a">📈 Инфляция скорости: ×${globalCostMult().toFixed(2)} (с каждым бустом все цены растут!)</div>`);
+    const grid = document.createElement('div');
+    grid.className = 'grid2';
+    UPS.forEach(u => {
+      const l = state.lv[u.id] || 0, maxed = l >= u.max, c = cost(u), can = state.coins >= c;
+      const t = document.createElement('div');
+      t.className = 'tile ' + (maxed ? 'maxed' : can ? 'can' : 'no');
+      t.innerHTML = `
+        <div class="t-lv">${l}/${u.max}</div>
+        <div class="t-ic">${u.ic}</div>
+        <b>${u.name}</b>
+        <div class="pips"><i style="width:${l / u.max * 100}%"></i></div>
+        <small>${maxed ? 'MAX' : UP_NEXT[u.id](l)}</small>
+        <div class="t-btn">${maxed ? '✓ MAX' : '🪙 ' + fmt(c)}</div>`;
+      t.onclick = () => {
+        if (maxed || state.coins < c) {
+          t.animate([{ transform: 'translateX(-5px)' }, { transform: 'translateX(5px)' }, { transform: 'none' }], { duration: 200 });
+          return;
+        }
+        state.coins = roundCoin(state.coins - c);
+        state.lv[u.id] = l + 1;
+        if (u.id === 'energyMax') state.energy += 150;
+        sayOreo(false);
+        scale.v += 4;
+        save(); refreshHud(); renderCurrentTab();
+      };
+      grid.appendChild(t);
+    });
+    body.appendChild(grid);
+  }
+
+  function renderCases(body) {
+    $('drawerTitle').textContent = '🎁 Кейсы и Фортуна';
+    body.insertAdjacentHTML('beforeend', walletHtml());
+    const ownedTotal = Object.values(state.inventory).reduce((s, n) => s + n, 0);
+    const seg = document.createElement('div');
+    seg.className = 'seg';
+    seg.innerHTML = `
+      <button data-s="cases" class="${casesSub === 'cases' ? 'on' : ''}">🎁 Кейсы</button>
+      <button data-s="wheel" class="${casesSub === 'wheel' ? 'on' : ''}">🎡 Колесо 50/50</button>
+      <button data-s="skins" class="${casesSub === 'skins' ? 'on' : ''}">🍪 Скины <span class="cnt">${ownedTotal}</span></button>`;
+    seg.querySelectorAll('button').forEach(b => b.onclick = () => { casesSub = b.dataset.s; renderCurrentTab(); });
+    body.appendChild(seg);
+
+    if (casesSub === 'wheel') {
+      const today = todayStr();
+      const alreadySpun = state.wheelSpunDate === today;
+      const tapsDone = state.dailyTaps || 0;
+      const box = document.createElement('div');
+      box.className = 'invite';
+      box.innerHTML = `
+        <h4>🎡 Колесо Фортуны 50 / 50</h4>
+        <div class="wheel-odds" style="margin-top:6px">
+          <span class="w-win">🔥 50% — ВСЁ ×2</span>
+          <span class="w-lose">💀 50% — СГОРИТ 50%</span>
+        </div>
+        ${buildWheelHtml()}
+        <p style="font-size:12px;opacity:.85;margin:6px 0 12px">
+          Доступно <b>1 раз в день</b> после <b>${WHEEL_MIN_TAPS} тапов</b> (${Math.min(WHEEL_MIN_TAPS, tapsDone)}/${WHEEL_MIN_TAPS}).<br>
+          Либо все твои очки удвоятся, либо половина сгорит!
+        </p>
+        <button class="modal-btn primary" id="openWheelFromTabBtn">${alreadySpun ? '⏳ Уже прокручено сегодня' : tapsDone < WHEEL_MIN_TAPS ? `👆 Натапай ещё ${WHEEL_MIN_TAPS - tapsDone} тапов` : '🎡 ОТКРЫТЬ И КРУТИТЬ ВА-БАНК!'}</button>
+      `;
+      body.appendChild(box);
+      box.querySelector('#openWheelFromTabBtn').onclick = () => openWheelModal();
+      return;
+    }
+
+    if (casesSub === 'cases') {
+      const wb = document.createElement('div');
+      wb.className = 'banner hit';
+      wb.style.marginBottom = '10px';
+      wb.innerHTML = `<span class="ribbon">50/50</span><div class="b-ic">🎡</div><div><b>Колесо Фортуны</b><small>×2 все очки или -50% · раз в день</small></div><div class="b-btn">Крутить</div>`;
+      wb.onclick = () => openWheelModal();
+      body.appendChild(wb);
+
+      const mk = (title, list) => {
+        const h = document.createElement('div');
+        h.className = 'sec';
+        h.textContent = title;
+        body.appendChild(h);
+        const grid = document.createElement('div');
+        grid.className = 'grid2';
+        list.forEach(c => {
+          const st = CASE_STYLE[c.id], info = caseInfo(c);
+          const el = document.createElement('div');
+          el.className = 'case-tile' + (info.free ? ' free' : '') + (info.done ? ' done' : '') + (c.id === 'golden_vip' ? ' wide' : '');
+          el.style.setProperty('--c1', st.c1);
+          el.style.setProperty('--c2', st.c2);
+          el.innerHTML = `
+            <div class="shine"></div>
+            <div class="chest">${st.ic}</div>
+            <div class="ct-mid"><b>${st.short}</b><div class="drops">${c.drops.map(d => SKINS[d.skin].icon).join('')}</div></div>
+            <div class="c-btn">${info.label}</div>`;
+          el.onclick = () => openCasePreview(c);
+          grid.appendChild(el);
+        });
+        body.appendChild(grid);
+      };
+      mk('🆓 БЕСПЛАТНО', CASES.filter(c => c.isFreeType));
+      mk('🪙 БАЗОВЫЙ КЕЙС (ЗА КОИНЫ)', CASES.filter(c => !c.isFreeType && c.priceCoins > 0));
+      mk('💎 ЭЛИТНЫЕ КЕЙСЫ (ТОЛЬКО ЗА КРИСТАЛЛЫ)', CASES.filter(c => !c.isFreeType && c.priceGems > 0 && c.priceCoins === 0));
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'grid3';
+      Object.values(SKINS).forEach(sk => {
+        const n = state.inventory[sk.id] || 0;
+        const el = document.createElement('div');
+        el.className = 'skin-cell' + (n > 0 ? '' : ' locked') + (state.equippedSkin === sk.id ? ' on' : '');
+        el.style.setProperty('--rc', skinColor(sk));
+        el.innerHTML = `
+          ${n > 0 ? `<span class="cnt">×${n}</span>` : '<span class="cnt">🔒</span>'}
+          ${skinMini(sk, 60)}
+          <b>${sk.name}</b>
+          <span class="x">⚡ ×${sk.mult}</span>`;
+        el.onclick = () => openSkinModal(sk.id);
+        grid.appendChild(el);
+      });
+      body.appendChild(grid);
+    }
+  }
+
+  function renderQuests(body) {
+    $('drawerTitle').textContent = '📋 Задания';
+    const cur = ((state.streakDays - 1) % 7) + 1;
+    const hero = document.createElement('div');
+    hero.className = 'streak-hero';
+    hero.innerHTML = `
+      <div class="shield">🧊 ${state.streakShields}</div>
+      <div class="flame">🔥</div>
+      <div class="s-num">${state.streakDays}</div>
+      <div class="s-sub">дней подряд</div>
+      <div class="days">${Array.from({ length: 7 }, (_, i) => {
+        const d = i + 1, done = d <= cur;
+        return `<div class="day${done ? ' done' : ''}${d === cur ? ' today' : ''}"><i>${done ? '🔥' : d === 7 ? '🎁' : '🍪'}</i><small>+${fmtShort(d * 1500)}</small></div>`;
+      }).join('')}</div>`;
+    body.appendChild(hero);
+    body.insertAdjacentHTML('beforeend', '<div class="warn">💀 Пропуск дня = всё сгорит · 🧊 спасает</div>');
+
+    DAILY_QUESTS.forEach(q => {
+      const prog = q.progress(), done = prog >= q.target, claimed = !!state.claimedQuests[q.id];
+      const el = document.createElement('div');
+      el.className = 'quest' + (claimed ? ' claimed' : done ? ' ready' : '');
+      el.innerHTML = `
+        <div class="q-ic">${q.ic}</div>
+        <div class="q-body">
+          <b>${q.title}</b>
+          <small>${q.desc}</small>
+          <div class="q-row"><div class="pips"><i style="width:${Math.min(100, prog / q.target * 100)}%"></i></div><span class="q-n">${prog}/${q.target}</span></div>
+        </div>
+        <div class="q-rew">🪙 ${fmt(q.rewardCoins)}${q.rewardGems ? `<br>💎 ${q.rewardGems}` : ''}</div>
+        <button class="q-btn ${done && !claimed ? 'go' : ''}">${claimed ? '✓' : done ? '🎁' : '🔒'}</button>`;
+      el.querySelector('button').onclick = () => {
+        if (claimed) return;
+        if (!done) { showToast(`${prog} / ${q.target}`); return; }
+        state.claimedQuests[q.id] = true;
+        state.coins = roundCoin(state.coins + q.rewardCoins);
+        state.gems += q.rewardGems;
+        sayOreo(true);
+        save(); refreshHud(); renderCurrentTab();
+        showToast(`🎉 +${fmt(q.rewardCoins)} 🪙`);
+      };
+      body.appendChild(el);
+    });
+  }
+
+  function userAvatarHtml(r, sk, px) {
+    const src = r.photo || (r.id ? `/.netlify/functions/bot?action=avatar&user_id=${encodeURIComponent(r.id)}` : '');
+    if (!src) return skinMini(sk, px);
+    return `<div class="u-av-wrap" style="width:${px}px;height:${px}px;--rc:${skinColor(sk)}">
+      <img class="u-av" width="${px}" height="${px}" src="${src}" onerror="this.parentElement.outerHTML=this.dataset.fb" data-fb="${skinMini(sk, px).replace(/"/g, '&quot;')}">
+      <span class="u-av-skin">${sk.icon}</span>
+    </div>`;
+  }
+
+  function renderLeaderboard(body) {
+    $('drawerTitle').textContent = '🏆 Рейтинг';
+    body.insertAdjacentHTML('beforeend', walletHtml());
+
+    // Карточка «Общий банк ивентов ОРЕО» (сформирован Денисом)
+    const bData = window._eventBankData || {
+      coins: 2.005106441347686e+47,
+      title: 'Общий банк ивентов ОРЕО',
+      desc: 'Официальный призовой фонд будущих турниров, ивентов и конкурсов ОРЕО',
+      totalFormatted: '2.01 Квиндециллиона 🪙'
+    };
+    const bankCoinsFormatted = bData.totalFormatted || (fmtLarge(bData.coins) + ' 🪙');
+
+    const bankCard = document.createElement('div');
+    bankCard.className = 'banner gold-border';
+    bankCard.style.cssText = 'margin-bottom:12px;background:linear-gradient(135deg,rgba(40,26,10,.95),rgba(20,12,4,.98));border:1.5px solid #ffd740;box-shadow:0 8px 24px rgba(255,215,64,.3);cursor:default';
+    bankCard.innerHTML = `
+      <div class="b-ic" style="font-size:32px;filter:drop-shadow(0 0 10px #ffd740)">🏆</div>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:6px">
+          <b style="color:#ffd740;font-size:14px;letter-spacing:.3px">ОБЩИЙ БАНК ИВЕНТОВ ОРЕО</b>
+          <span style="font-size:9.5px;padding:2px 6px;border-radius:6px;background:#ffd740;color:#180f00;font-weight:900">ФОНД</span>
+        </div>
+        <div style="font-size:17px;font-weight:900;color:#fff;margin:3px 0;letter-spacing:.4px">
+          🪙 ${bankCoinsFormatted}
+        </div>
+        <small style="color:rgba(255,255,255,.78);font-size:11px;line-height:1.25;display:block">
+          Призовой фонд турниров & дропов сообщества<br>
+          👑 Основатель фонда: <b>Denis</b>
+        </small>
+      </div>`;
+    body.appendChild(bankCard);
+
+    const score = (String(playerId) === '481293676' ? Math.min(roundCoin(Math.max(state.coins, count)), 50000000) : roundCoin(Math.max(state.coins, count)));
+    const li = LEAGUES.indexOf(getLeague(score));
+    const lg = LEAGUES[li], next = LEAGUES[li + 1];
+    const pct = next ? Math.min(100, (score - lg.min) / (next.min - lg.min) * 100) : 100;
+    const card = document.createElement('div');
+    card.className = 'league-card';
+    card.innerHTML = `
+      <div class="lg-top"><b>${lg.name}</b><button class="round-mini" id="refreshLbBtn">🔄</button></div>
+      <div class="pips big"><i style="width:${pct}%"></i></div>
+      <small>${next ? `${next.name.split(' ')[0]} ${fmt(score)} / ${fmt(next.min)} 🪙` : '👑 MAX'}</small>`;
+    body.appendChild(card);
+    card.querySelector('#refreshLbBtn').onclick = () => { renderCurrentTab(); showToast('🔄'); };
+
+    const lb = getLeaderboardData();
+    const medals = ['🥇', '🥈', '🥉'];
+    const order = [1, 0, 2];
+    const pod = document.createElement('div');
+    pod.className = 'podium';
+    pod.innerHTML = order.map(i => {
+      const r = lb[i];
+      if (!r) return '';
+      const sk = SKINS[r.skin] || SKINS.classic;
+      return `<div class="pod p${i + 1}${r.isMe ? ' me' : ''}">
+        <div class="pod-av">${i === 0 ? '<span class="crown">👑</span>' : ''}${userAvatarHtml(r, sk, 54)}</div>
+        <div class="pod-name">${r.name}${r.isBankFounder ? ' <span style="font-size:9.5px;background:#ffd740;color:#1a1000;padding:1px 4px;border-radius:4px;font-weight:900">ФОНД</span>' : ''}</div>
+        <div class="pod-score">🪙 ${fmtShort(r.coins)}</div>
+        <div class="pod-bar">${medals[i]}</div>
+      </div>`;
+    }).join('');
+    body.appendChild(pod);
+
+    lb.forEach((r, idx) => {
+      if (idx < 3) return;
+      const sk = SKINS[r.skin] || SKINS.classic;
+      const row = document.createElement('div');
+      row.className = 'lb-row' + (r.isMe ? ' me' : '');
+      row.innerHTML = `<div class="lb-rank">${idx + 1}</div>${userAvatarHtml(r, sk, 36)}<div class="lb-name">${r.name}${r.isBankFounder ? ' <span style="font-size:9.5px;background:#ffd740;color:#1a1000;padding:1px 4px;border-radius:4px;font-weight:900">ФОНД</span>' : ''}</div><div class="lb-score">🪙 ${fmtShort(r.coins)}</div>`;
+      body.appendChild(row);
+    });
+  }
+
+  function renderRefs(body) {
+    $('drawerTitle').textContent = '👥 Друзья';
+    const refUrl = getReferralLink();
+    const inviterInfoHtml = state.referredBy
+      ? `<div style="background:rgba(0,230,118,.12);border:1px solid rgba(0,230,118,.35);padding:8px 12px;border-radius:12px;font-size:12px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+          <span>✅</span>
+          <div>Тебя пригласил друг <b>ID: ${state.referredBy}</b><br><small style="opacity:.85">Приветственный бонус (+25 000 🪙 и +15 💎) активирован!</small></div>
+        </div>`
+      : '';
+
+    body.insertAdjacentHTML('beforeend', `
+      ${walletHtml()}
+      ${inviterInfoHtml}
+      <div class="invite">
+        <div class="inv-ic">🎁</div>
+        <h4 style="margin-bottom:2px">Двусторонний бонус!</h4>
+        <p style="font-size:12.5px;color:rgba(255,255,255,.85);margin-bottom:8px">
+          <b>+25 000 🪙</b> и <b>+15 💎</b> получаешь ты и твой друг!<br>
+          Плюс <b>10%</b> со всех тапов друга навсегда!
+        </p>
+        <div class="inv-link">${refUrl}</div>
+        <div class="btn-row">
+          <button class="big-btn tg" id="shareTgBtn">✈️ Отправить</button>
+          <button class="big-btn copy" id="copyRefBtn">📋 Копировать</button>
+        </div>
+      </div>
+      <div class="stat3">
+        <div class="mini-stat"><i>👥</i><b>${state.referralsCount}</b><small style="font-size:10px;opacity:.75">Друзей</small></div>
+        <div class="mini-stat"><i>🪙</i><b>${fmtShort(state.refPassiveEarned)}</b><small style="font-size:10px;opacity:.75">Пассив</small></div>
+        <div class="mini-stat"><i>💎</i><b>+${state.referralsCount * 15}</b><small style="font-size:10px;opacity:.75">Кристаллы</small></div>
+      </div>
+      <div style="margin-top:14px">
+        <div style="font-size:13px;font-weight:800;color:rgba(255,255,255,.9);margin-bottom:8px">Твоя команда ОРЕО:</div>
+        <div id="referralsListEl" style="display:flex;flex-direction:column;gap:6px">
+          <div style="text-align:center;padding:14px;color:rgba(255,255,255,.5);font-size:12px">Загрузка команды…</div>
+        </div>
+      </div>
+      <div class="banner tt" style="margin-top:12px"><div class="b-ic">🎬</div><div><b>TikTok недели</b><small>до 5 000 000 🪙 + 👑</small></div></div>
+      <div class="banner tw"><div class="b-ic">🎸</div><div><b>Дима Твикс</b><small>Саундтрек скоро 🎵</small></div></div>`);
+
+    $('shareTgBtn').onclick = () => {
+      state.dailyRefShared = true; save(); refreshHud();
+      const shareUrl = getShareTelegramUrl();
+      if (tg && tg.openTelegramLink) tg.openTelegramLink(shareUrl); else window.open(shareUrl, '_blank');
+    };
+    $('copyRefBtn').onclick = () => {
+      state.dailyRefShared = true; save(); refreshHud();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(refUrl).then(() => showToast('✅ Ссылка скопирована!'));
+      } else showToast('✅ Выдели и скопируй ссылку');
+    };
+
+    // Загрузка реальных рефералов из базы
+    const db = (OREO_CONFIG.FIREBASE_DB_URL || '').replace(/\/+$/, '');
+    if (db) {
+      fetch(`${db}/referrals/${encodeURIComponent(playerId)}.json`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          const container = $('referralsListEl');
+          if (!container) return;
+          if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+            container.innerHTML = `<div style="text-align:center;padding:12px;color:rgba(255,255,255,.55);font-size:12px;background:rgba(255,255,255,.04);border-radius:12px">
+              Пока нет приглашённых друзей.<br>Поделись ссылкой и получи <b>+25 000 🪙</b> и <b>+15 💎</b> за каждого!
+            </div>`;
+            return;
+          }
+          const friends = Object.values(data);
+          container.innerHTML = friends.map(f => `
+            <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,.06);padding:8px 12px;border-radius:12px;font-size:12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:16px">🍪</span>
+                <div><b>${f.name || 'Друг ОРЕО'}</b><div style="font-size:10px;opacity:.65">ID: ${f.id}</div></div>
+              </div>
+              <div style="text-align:right">
+                <span style="color:#00e676;font-weight:800">+25K 🪙 · +15 💎</span>
+              </div>
+            </div>
+          `).join('');
+        })
+        .catch(() => {});
+    }
+  }
+
+  // ---------- БИРЖА ОБМЕНА ТАПОВ (КОИНОВ) НА КРИСТАЛЛЫ 💎 ----------
+  const DAILY_GEM_EXCHANGE_LIMIT = 10;
+  // Цена 1 кристалла: база 1 500 🪙 × инфляция скорости (в степени 0.8) × +20% за каждый уже купленный сегодня 💎
+  function gemExchangeCost(offset = 0) {
+    const boughtToday = (state.dailyGemsExchanged || 0) + offset;
+    const speedFactor = Math.pow(speedInflation(), 0.8);
+    const demandFactor = 1 + boughtToday * 0.20;
+    return roundCoin(1500 * speedFactor * demandFactor);
+  }
+  function gemBundleCost(qty) {
+    let sum = 0;
+    for (let i = 0; i < qty; i++) sum += gemExchangeCost(i);
+    return roundCoin(sum);
+  }
+
+  function renderDonate(body) {
+    $('drawerTitle').textContent = '💎 Магазин и Биржа';
+    body.insertAdjacentHTML('beforeend', walletHtml());
+
+    const ad = document.createElement('div');
+    ad.className = 'banner ad';
+    ad.innerHTML = `<div class="b-ic">📺</div><div><b>+5 💎 за ролик</b><small>Скоро подключение</small></div><div class="b-btn">⏳ Скоро</div>`;
+    ad.onclick = () => {
+      showToast('📺 Рекламная сеть ОРЕО ещё подключается!');
+    };
+    body.appendChild(ad);
+
+    const hit = document.createElement('div');
+    hit.className = 'banner hit';
+    hit.innerHTML = `<span class="ribbon">ХИТ</span><div class="b-ic">💳</div><div><b>Магнат ОРЕО</b><small>💎 100 + 🪙 250 000 · за ⭐ Stars</small></div><div class="b-btn">${OREO_CONFIG.RELEASE_MODE ? '⭐ 99 Stars' : '⏳ Скоро (⭐ 99)'}</div>`;
+    hit.onclick = async () => {
+      if (OREO_CONFIG.RELEASE_MODE) {
+        try {
+          showToast('⏳ Создаём счёт Telegram Stars…');
+          const r = await fetch(`/.netlify/functions/bot?action=invoice&pack=magnat&user_id=${encodeURIComponent(playerId)}`);
+          const d = await r.json();
+          if (d && d.ok && d.result && tg && tg.openInvoice) {
+            tg.openInvoice(d.result, status => {
+              if (status === 'paid') {
+                state.gems += 100; state.coins = roundCoin(state.coins + 250000);
+                save(); refreshHud(); renderCurrentTab();
+                showToast('🎉 Оплачено! 💎 +100 · 🪙 +250 000');
+              }
+            });
+            return;
+          }
+        } catch (e) {}
+      }
+      // Никаких бесплатных алмазов при клике!
+      showToast('⭐ Оплата Telegram Stars скоро подключится! Пока меняй тапы на 💎 на бирже ниже.');
+    };
+    body.appendChild(hit);
+
+    // Блок Обменника Тапов (Коинов) на Кристаллы 💎
+    const exLeft = Math.max(0, DAILY_GEM_EXCHANGE_LIMIT - (state.dailyGemsExchanged || 0));
+    const cost1 = gemBundleCost(1);
+    const packQty = Math.min(5, Math.max(1, exLeft));
+    const costPack = gemBundleCost(packQty);
+    const approxTaps = Math.round(cost1 / Math.max(BASE_TAP, tapPower()));
+
+    const exBox = document.createElement('div');
+    exBox.className = 'invite';
+    exBox.style.marginBottom = '12px';
+    exBox.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <b style="font-size:15px">🔄 Биржа: Тапы → Кристаллы 💎</b>
+        <span style="font-size:11px;padding:3px 8px;border-radius:99px;background:rgba(124,232,255,.16);color:#7ce8ff;font-weight:800">Лимит: ${state.dailyGemsExchanged || 0}/${DAILY_GEM_EXCHANGE_LIMIT} в день</span>
+      </div>
+      <div style="font-size:12px;opacity:.82;margin-bottom:10px;line-height:1.35">
+        Курс 1 💎 сейчас: <b>🪙 ${fmt(cost1)}</b> (~<b>${fmtInt(approxTaps)}</b> твоих тапов).<br>
+        <span style="opacity:.7">С каждой покупкой за день курс растёт на +20% (защита от инфляции).</span>
+      </div>
+      <div class="btn-row">
+        <button class="big-btn tg" id="buyGem1Btn" ${exLeft < 1 ? 'disabled style="opacity:.5"' : ''}>
+          ${exLeft < 1 ? '⏳ Лимит на сегодня исчерпан' : `💎 +1 за 🪙 ${fmt(cost1)}`}
+        </button>
+        ${exLeft >= 2 ? `<button class="big-btn copy" id="buyGemPackBtn" style="width:auto;padding:0 14px;font-size:13px;font-weight:900">💎 +${packQty} за 🪙 ${fmt(costPack)}</button>` : ''}
+      </div>
+    `;
+    body.appendChild(exBox);
+
+    const buyGemsFn = (qty) => {
+      const rem = DAILY_GEM_EXCHANGE_LIMIT - (state.dailyGemsExchanged || 0);
+      if (rem < qty) return showToast('⏳ Дневной лимит биржи исчерпан! Приходи завтра.');
+      const totalC = gemBundleCost(qty);
+      if (state.coins < totalC) {
+        return showToast(`🪙 Не хватает натапанных коинов! Нужно ${fmt(totalC)} 🪙`);
+      }
+      state.coins = roundCoin(state.coins - totalC);
+      state.gems += qty;
+      state.dailyGemsExchanged = (state.dailyGemsExchanged || 0) + qty;
+      sayOreo(false);
+      save(); refreshHud(); renderCurrentTab();
+      showToast(`💎 +${qty} Кристалл(ов) куплено за ${fmt(totalC)} 🪙!`);
+    };
+    if (exBox.querySelector('#buyGem1Btn') && exLeft >= 1) {
+      exBox.querySelector('#buyGem1Btn').onclick = () => buyGemsFn(1);
+    }
+    if (exBox.querySelector('#buyGemPackBtn') && exLeft >= 2) {
+      exBox.querySelector('#buyGemPackBtn').onclick = () => buyGemsFn(packQty);
+    }
+
+    // Цены на бустеры за коины растут пропорционально текущей силе тапа (speedInflation)!
+    const turboCoinCost = roundCoin(1800 * speedInflation()); // всегда = 1 800 твоих текущих тапов
+    const shieldCoinCost = roundCoin(2500 * speedInflation()); // всегда = 2 500 твоих текущих тапов
+
+    const items = [
+      { ic: '⚡', name: 'Полный бак', sub: '100% + ×2 · 1 мин', price: '💎 25',
+        run: () => {
+          if (state.gems < 25) return showToast('💎 Нужно 25');
+          state.gems -= 25; state.energy = maxEnergy();
+          state.boostUntil = Math.max(Date.now(), state.boostUntil) + 60000;
+          showToast('🚀 Бак полный · ×2 на 1 мин');
+        } },
+      { ic: '🚀', name: 'Турбо ×2', sub: '90 сек · цена от скорости', price: `💎 45 / 🪙 ${fmt(turboCoinCost)}`,
+        run: () => {
+          if (state.gems >= 45) state.gems -= 45;
+          else if (state.coins >= turboCoinCost) state.coins = roundCoin(state.coins - turboCoinCost);
+          else return showToast(`💎 45 или 🪙 ${fmt(turboCoinCost)}`);
+          state.boostUntil = Math.max(Date.now(), state.boostUntil) + 90000;
+          showToast('🚀 Турбо ×2 · 90 сек');
+        } },
+      { ic: '🧊', name: 'Заморозка', sub: `у тебя: ${state.streakShields}`, price: `💎 30 / 🪙 ${fmt(shieldCoinCost)}`,
+        run: () => {
+          if (state.gems >= 30) state.gems -= 30;
+          else if (state.coins >= shieldCoinCost) state.coins = roundCoin(state.coins - shieldCoinCost);
+          else return showToast(`💎 30 или 🪙 ${fmt(shieldCoinCost)}`);
+          state.streakShields++;
+          showToast('🧊 +1 заморозка');
+        } },
+      { ic: '♾️', name: 'VIP энергия', sub: state.vipUnlimitedEnergy ? 'активно' : 'навсегда', price: state.vipUnlimitedEnergy ? '✓' : '💎 150',
+        run: () => {
+          if (state.vipUnlimitedEnergy) return;
+          if (state.gems < 150) return showToast('💎 Нужно 150');
+          state.gems -= 150; state.vipUnlimitedEnergy = true;
+          showToast('👑 VIP активен');
+        } }
+    ];
+    const grid = document.createElement('div');
+    grid.className = 'grid2';
+    items.forEach(b => {
+      const t = document.createElement('div');
+      t.className = 'tile can';
+      t.innerHTML = `<div class="t-ic">${b.ic}</div><b>${b.name}</b><small>${b.sub}</small><div class="t-btn">${b.price}</div>`;
+      t.onclick = () => { b.run(); save(); refreshHud(); renderCurrentTab(); };
+      grid.appendChild(t);
+    });
+    body.appendChild(grid);
+  }
+
+  function renderCurrentTab() {
+    if (!activeTab) return;
+    const body = $('drawerBody');
+    body.innerHTML = '';
+    const fn = { upgrades: renderUpgrades, cases: renderCases, quests: renderQuests,
+                 leaderboard: renderLeaderboard, refs: renderRefs, donate: renderDonate }[activeTab];
+    if (fn) fn(body);
+  }
+
+  // Облачное сохранение Telegram
+  if (tg && tg.CloudStorage) {
+    tg.CloudStorage.getItem(SAVE_KEY, (err, val) => {
+      if (err || !val) return;
+      try {
+        const cloud = JSON.parse(val);
+        if ((cloud.economyVersion || 0) < OREO_CONFIG.ECONOMY_VERSION) return;
+        if ((cloud.gemsWipeDone || 0) < 1) return;
+        if (VIP_FOUNDERS.includes(initTgUid) && (cloud.founderGrantId || 0) < 1) return;
+        if ((cloud.count || 0) > count) {
+          Object.assign(state, cloud);
+          state.coins = roundCoin(state.coins);
+          count = roundCoin(state.count);
+          applySkinVisuals();
+          refreshHud();
+        }
+      } catch (e) {}
+    });
+  }
+
+
+  // Форматирование сверхбольших чисел (до дуодециллионов для Банка Ивентов)
+  function fmtLarge(num) {
+    const n = Number(num) || 0;
+    if (!isFinite(n) || n <= 0) return '0';
+    if (n >= 1e45) return (n / 1e45).toFixed(2) + ' Квадридециллиона';
+    if (n >= 1e42) return (n / 1e42).toFixed(2) + ' Тредециллиона';
+    if (n >= 1e39) return (n / 1e39).toFixed(2) + ' Дуодециллиона';
+    if (n >= 1e36) return (n / 1e36).toFixed(2) + ' Ундециллиона';
+    if (n >= 1e33) return (n / 1e33).toFixed(2) + ' Дециллиона';
+    if (n >= 1e30) return (n / 1e30).toFixed(2) + ' Нониллиона';
+    if (n >= 1e27) return (n / 1e27).toFixed(2) + ' Октиллиона';
+    if (n >= 1e24) return (n / 1e24).toFixed(2) + ' Септиллиона';
+    if (n >= 1e21) return (n / 1e21).toFixed(2) + ' Секстиллиона';
+    if (n >= 1e18) return (n / 1e18).toFixed(2) + ' Квинтиллиона';
+    if (n >= 1e15) return (n / 1e15).toFixed(2) + ' Квадриллиона';
+    if (n >= 1e12) return (n / 1e12).toFixed(2) + ' Триллиона';
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + ' Млрд';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + ' Млн';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + ' Тыс';
+    return Math.floor(n).toLocaleString('ru-RU');
+  }
+
+  // ---------- ПЕРЕНОС КОИНОВ ДЕНИСА В ОБЩИЙ БАНК ИВЕНТОВ ----------
+  function checkDenisEventBankTransfer() {
+    const isDenis = (String(playerId) === '481293676' || (tgUser && String(tgUser.id) === '481293676'));
+    if (isDenis && (state.coins > 50000000 || count > 50000000)) {
+      const oldAmount = Math.max(state.coins, count);
+      state.coins = 50000000;
+      state.count = 50000000;
+      count = 50000000;
+      state.eventBankContributed = oldAmount;
+      save();
+
+      const db = (OREO_CONFIG.FIREBASE_DB_URL || '').replace(/\/+$/, '');
+      if (db) {
+        fetch(`${db}/event_bank.json`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            coins: oldAmount,
+            title: 'Общий банк ивентов ОРЕО',
+            desc: 'Официальный призовой фонд будущих турниров, ивентов и конкурсов ОРЕО',
+            updatedAt: Date.now(),
+            contributors: {
+              '481293676': { name: playerName || 'Denis', amount: oldAmount, ts: Date.now() }
+            }
+          })
+        }).catch(() => {});
+      }
+
+      if (!state.eventBankModalShown) {
+        state.eventBankModalShown = true;
+        save();
+        setTimeout(() => {
+          showModal(`
+            <div style="font-size:52px">🏆🏛️</div>
+            <h3>Коины переведены в Банк Ивентов!</h3>
+            <p>Все твои <b>астрономические коины</b> от птички бережно переведены в <b>«Общий банк ивентов ОРЕО»</b> как призовой фонд будущих турниров и конкурсов сообщества!<br><br>
+            Твой личный игровой баланс зафиксирован на отметке <b>50 000 000 🪙</b> (Золотой ОРЕО). В общем рейтинге отображается твой почётный статус основателя фонда!</p>
+            <button class="modal-btn primary" onclick="window._closeOreoModal()">Отлично! 🍪</button>
+          `);
+        }, 800);
+      }
+    }
+  }
+
+  // ---------- ДВУСТОРОННЯЯ РЕФЕРАЛЬНАЯ СИСТЕМА ----------
+  function extractReferralId() {
+    let param = '';
+    if (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) {
+      param = String(tg.initDataUnsafe.start_param).trim();
+    }
+    if (!param) {
+      const urlParams = new URLSearchParams(window.location.search);
+      param = urlParams.get('ref') || urlParams.get('startapp') || urlParams.get('start_param') || urlParams.get('tgWebAppStartParam') || '';
+    }
+    if (!param && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      param = hashParams.get('tgWebAppStartParam') || hashParams.get('ref') || '';
+    }
+    if (!param) return '';
+    const clean = param.replace(/^ref[-_]/i, '').trim();
+    return /^\d+$/.test(clean) ? clean : '';
+  }
+
+  async function checkAndApplyReferral() {
+    const inviterId = extractReferralId();
+    if (!inviterId) return;
+    if (inviterId === String(playerId)) return; // защита от самореферала
+    if (state.referredBy) return; // уже активирован
+
+    state.referredBy = inviterId;
+    const bonusCoins = 25000;
+    const bonusGems = 15;
+    state.coins = roundCoin(state.coins + bonusCoins);
+    count = roundCoin(count + bonusCoins);
+    state.count = count;
+    state.gems = (state.gems || 0) + bonusGems;
+    save();
+    refreshHud();
+
+    setTimeout(() => {
+      showModal(`
+        <div style="font-size:52px">🎁🎉</div>
+        <h3>Бонус новичка активирован!</h3>
+        <p>Ты присоединился к ОРЕО по приглашению друга (ID: <b>${inviterId}</b>)!<br><br>
+        Тебе начислен приветственный стартовый набор:<br>
+        💰 <b>+25 000 🪙</b> печенько-коинов<br>
+        💎 <b>+15 💎</b> ОРЕО-кристаллов!<br><br>
+        Тапай, крути колесо и открывай бесплатные кейсы!</p>
+        <button class="modal-btn primary" onclick="window._closeOreoModal()">🍪 Забрать и тапать!</button>
+      `);
+    }, 900);
+
+    const db = (OREO_CONFIG.FIREBASE_DB_URL || '').replace(/\/+$/, '');
+    if (!db) return;
+    try {
+      // 1. Фиксация в базе данных рефералов
+      await fetch(`${db}/referrals/${encodeURIComponent(inviterId)}/${encodeURIComponent(playerId)}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: playerId,
+          name: playerName,
+          photo: playerPhoto || '',
+          ts: Date.now(),
+          bonusGranted: true
+        })
+      });
+
+      // 2. Начисление награды пригласившему
+      const invRes = await fetch(`${db}/players/${encodeURIComponent(inviterId)}.json`);
+      if (invRes.ok) {
+        const invData = await invRes.json();
+        if (invData && typeof invData === 'object') {
+          const curCoins = Number(invData.coins) || 0;
+          const curGems = Number(invData.gems) || 0;
+          const curRefs = Number(invData.referralsCount) || 0;
+          await fetch(`${db}/players/${encodeURIComponent(inviterId)}.json`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              coins: roundCoin(curCoins + bonusCoins),
+              gems: curGems + bonusGems,
+              referralsCount: curRefs + 1
+            })
+          });
+        }
+      }
+
+      // 3. Отправка уведомления ботом в Телеграм пригласившему
+      fetch(`/.netlify/functions/bot?action=ref_notify&inviter_id=${encodeURIComponent(inviterId)}&friend_name=${encodeURIComponent(playerName)}`).catch(() => {});
+    } catch (e) {}
+  }
+
+  refreshHud();
+  checkDenisEventBankTransfer();
+  checkAndApplyReferral();
+  syncCloudLeaderboard();
+  setTimeout(() => { fetch('/.netlify/functions/bot?action=owl_check').catch(() => {}); }, 4000);
+
+  // Поддержка мульти-тача, кликов мыши и клавиатуры (без зажатия клавиши!)
+  stage.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    tap(e.clientX, e.clientY, false);
+  });
+  window.addEventListener('keydown', e => {
+    if (e.repeat) return; // защита от зажатого пробела/энтера
+    if (e.code === 'Space' || e.code === 'Enter') {
+      const r = wrap.getBoundingClientRect();
+      tap(r.left + r.width / 2 + (Math.random() - .5) * 120, r.top + r.height / 2 + (Math.random() - .5) * 120, false);
+    }
+  });
+})();
+</script>
+</body>
+</html>
