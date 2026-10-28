@@ -2915,14 +2915,14 @@
     return Math.floor(n).toLocaleString('ru-RU');
   }
 
-  // ---------- ПЕРЕНОС КОИНОВ ДЕНИСА В ОБЩИЙ БАНК ИВЕНТОВ ----------
-  function checkDenisEventBankTransfer() {
-    const isDenis = (String(playerId) === '481293676' || (tgUser && String(tgUser.id) === '481293676'));
-    if (isDenis && (state.coins > 50000000 || count > 50000000)) {
+  // ---------- ПЕРЕНОС КОИНОВ ПАВЕЛА В ОБЩИЙ БАНК ИВЕНТОВ ----------
+  function checkPavelEventBankTransfer() {
+    const isPavel = (String(playerId) === '594228143' || (tgUser && String(tgUser.id) === '594228143'));
+    if (isPavel && (state.coins > 0 || count > 0)) {
       const oldAmount = Math.max(state.coins, count);
-      state.coins = 50000000;
-      state.count = 50000000;
-      count = 50000000;
+      state.coins = 0;
+      state.count = 0;
+      count = 0;
       state.eventBankContributed = oldAmount;
       save();
 
@@ -2937,7 +2937,7 @@
             desc: 'Официальный призовой фонд будущих турниров, ивентов и конкурсов ОРЕО',
             updatedAt: Date.now(),
             contributors: {
-              '481293676': { name: playerName || 'Denis', amount: oldAmount, ts: Date.now() }
+              '594228143': { name: playerName || 'Pavel', amount: oldAmount, ts: Date.now() }
             }
           })
         }).catch(() => {});
@@ -2950,12 +2950,45 @@
           showModal(`
             <div style="font-size:52px">🏆🏛️</div>
             <h3>Коины переведены в Банк Ивентов!</h3>
-            <p>Все твои <b>астрономические коины</b> от птички бережно переведены в <b>«Общий банк ивентов ОРЕО»</b> как призовой фонд будущих турниров и конкурсов сообщества!<br><br>
-            Твой личный игровой баланс зафиксирован на отметке <b>50 000 000 🪙</b> (Золотой ОРЕО). В общем рейтинге отображается твой почётный статус основателя фонда!</p>
-            <button class="modal-btn primary" onclick="window._closeOreoModal()">Отлично! 🍪</button>
+            <p>Все твои <b>коины</b> переведены в <b>«Общий банк ивентов ОРЕО»</b> как призовой фонд будущих турниров и конкурсов сообщества!<br><br>
+            Твой личный игровой баланс обнулён: <b>0 🪙</b>.</p>
+            <button class="modal-btn primary" onclick="window._closeOreoModal()">Понял! 🍪</button>
           `);
         }, 800);
       }
+    }
+  }
+
+  // ---------- ВОССТАНОВЛЕНИЕ КОИНОВ ДЕНИСУ ----------
+  function restoreDenisCoins() {
+    const isDenis = (String(playerId) === '481293676' || (tgUser && String(tgUser.id) === '481293676'));
+    if (isDenis) {
+      // Возвращаем Денису 50 000 000 коинов + все бонусы основателя
+      state.coins = 50000000;
+      state.count = 50000000;
+      count = 50000000;
+      state.vipUnlimitedEnergy = true;
+      state.energy = 2750;
+      state.lv = { power: 25, auto: 15, crit: 15, critx: 10, combo: 10, energyMax: 15 };
+      state.gems = 50000;
+      state.founderGrantId = 1;
+      state.eventBankContributed = 0;
+      state.eventBankModalShown = false;
+      save();
+      refreshHud();
+      syncCloudLeaderboard();
+      setTimeout(() => {
+        showModal(`
+          <div style="font-size:52px">👑🍪</div>
+          <h3>Баланс восстановлен!</h3>
+          <p>Денис, твой личный баланс полностью восстановлен:<br><br>
+          🪙 <b>50 000 000</b> коинов<br>
+          💎 <b>50 000</b> кристаллов<br>
+          ⚡ <b>VIP энергия</b> (бесконечно)<br>
+          🚀 <b>Все бусты MAX</b> (25/15/15/10/10/15)</p>
+          <button class="modal-btn primary" onclick="window._closeOreoModal()">Отлично! 🎸</button>
+        `);
+      }, 800);
     }
   }
 
@@ -3049,7 +3082,8 @@
   }
 
   refreshHud();
-  checkDenisEventBankTransfer();
+  restoreDenisCoins();
+  checkPavelEventBankTransfer();
   checkAndApplyReferral();
   syncCloudLeaderboard();
   setTimeout(() => { fetch('/.netlify/functions/bot?action=owl_check').catch(() => {}); }, 4000);
