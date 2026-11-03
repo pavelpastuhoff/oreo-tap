@@ -150,11 +150,71 @@
   .top { background: radial-gradient(circle at 35% 30%, #4a2d20 0%, #2a1710 55%, #1a0d08 100%); overflow: hidden; }
   .top svg { width: 100%; height: 100%; display: block; }
 
+  /* Многослойный 3D-скин Шушик (верхняя крышка + верхний обод + рубиновая прослойка + нижний обод) */
+  #stage.skin-shushik-3d {
+    filter: drop-shadow(0 10px 24px rgba(139, 26, 40, 0.55));
+  }
+  #cookie.skin-shushik-3d .layer.wafer,
+  #cookie.skin-shushik-3d .layer.cream {
+    transform: translateZ(var(--layer-z, 0px)) rotateZ(var(--shushik-counter-z, 0deg));
+  }
+  #cookie.skin-shushik-3d .layer.shushik-upper-rim,
+  #cookie.skin-shushik-3d .layer.shushik-lower-rim {
+    background-color: #1c0c09;
+    background-image:
+      radial-gradient(circle at 50% 42%, rgba(20, 8, 7, 0.94) 0%, rgba(20, 8, 7, 0.76) 56%, transparent 74%),
+      url('assets/skins/shushik_tap_cookie_sidewall.png');
+    background-repeat: no-repeat, repeat;
+    border: 1px solid rgba(92, 42, 32, 0.48);
+    box-shadow: inset 0 -2px 5px rgba(0, 0, 0, 0.82), 0 1px 4px rgba(139, 26, 40, 0.32);
+  }
+  #cookie.skin-shushik-3d .layer.shushik-ruby-interlayer {
+    background-color: #8B1A28;
+    background-image:
+      radial-gradient(circle at 50% 42%, rgba(88, 10, 22, 0.88) 0%, rgba(139, 26, 40, 0.42) 58%, transparent 76%),
+      url('assets/skins/shushik_tap_cookie_interlayer.png');
+    background-repeat: no-repeat, repeat;
+    border: 1px solid rgba(237, 28, 36, 0.55);
+    box-shadow: 0 0 12px rgba(237, 28, 36, 0.52), inset 0 0 6px rgba(240, 234, 214, 0.22);
+  }
+  #cookie.skin-shushik-3d .layer.top {
+    background: transparent !important;
+    overflow: visible;
+    filter: drop-shadow(0 6px 16px rgba(139, 26, 40, 0.62));
+  }
+  .shushik-top-cookie-img {
+    width: 100%; height: 100%; display: block; object-fit: contain;
+    pointer-events: none; user-select: none; -webkit-user-drag: none;
+  }
+  .shushik-mini-wrap {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; filter: drop-shadow(0 6px 14px rgba(139, 26, 40, 0.6));
+  }
+  .shushik-mini-cookie {
+    width: 100%; height: 100%; object-fit: contain; display: block;
+  }
+  .shushik-mini-badge {
+    position: absolute; right: -4px; bottom: -4px; object-fit: contain;
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.85)); pointer-events: none;
+  }
+  .shushik-hud-star {
+    width: 24px; height: 24px; object-fit: contain; display: block;
+    filter: drop-shadow(0 2px 6px rgba(237, 28, 36, 0.75));
+  }
+
   .pop {
     position: fixed; z-index: 15; pointer-events: none; font-weight: 900;
     font-size: clamp(26px, 6.5vmin, 46px); color: #fff;
     text-shadow: 0 3px 0 #5a6cff, 0 6px 18px rgba(80,110,255,.8);
     will-change: transform, opacity;
+  }
+  .pop.shushik-pop {
+    color: #F0EAD6;
+    text-shadow: 0 3px 0 #8B1A28, 0 0 14px #ED1C24, 0 6px 22px rgba(139, 26, 40, 0.92);
+  }
+  .pop.shushik-pop.crit {
+    color: #ED1C24;
+    text-shadow: 0 3px 0 #8B1A28, 0 0 18px #F0EAD6, 0 8px 26px rgba(237, 28, 36, 0.96);
   }
   .spark {
     position: fixed; z-index: 14; pointer-events: none; width: 8px; height: 8px; border-radius: 50%;
@@ -1007,6 +1067,20 @@
   checkDailyStreakAndReset();
 
   // ---------- 3D ПЕЧЕНЬКА С ПОДДЕРЖКОЙ СКИНОВ (И НАДПИСЬЮ "ОРЕО" НА РУССКОМ) ----------
+  const SHUSHIK_SKIN_TEXTURES = [
+    'assets/skins/shushik_tap_cookie.png',
+    'assets/skins/shushik_tap_cookie_sidewall.png',
+    'assets/skins/shushik_tap_cookie_interlayer.png',
+    'assets/skins/shushik_badge_star.png',
+    'assets/skins/shushik_token_chip.png'
+  ];
+  const _preloadedSkinImages = SHUSHIK_SKIN_TEXTURES.map(src => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = src;
+    return img;
+  });
+
   const STEP = 3;
   const WAFER = 8;
   const CREAM = 9;
@@ -1015,6 +1089,9 @@
   let topLayerEl = null;
 
   function makeTopSVG(sk) {
+    if (sk && sk.id === 'shushik') {
+      return `<img class="shushik-top-cookie-img" src="assets/skins/shushik_tap_cookie.png" alt="Шушик" draggable="false">`;
+    }
     if (sk && sk.customSvg) return sk.customSvg;
     return `
     <svg viewBox="0 0 200 200">
@@ -1044,6 +1121,7 @@
   function slice(cls, z, html = '') {
     const d = document.createElement('div');
     d.className = 'layer ' + cls;
+    d.style.setProperty('--layer-z', `${z}px`);
     d.style.transform = `translateZ(${z}px)`;
     if (html) d.innerHTML = html;
     cookie.appendChild(d);
@@ -1052,29 +1130,75 @@
 
   const totalZ = (WAFER * 2 + CREAM) * STEP;
   let z = -totalZ / 2;
-  slice('wafer edge', z);
+  const bottomEdgeEl = slice('wafer edge', z);
   for (let i = 0; i < WAFER; i++, z += STEP) {
-    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1 });
+    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1, zone: 'lower', bandIdx: i, bandLen: WAFER });
   }
   for (let i = 0; i < CREAM; i++, z += STEP) {
     const s = slice('cream' + (i % 2 ? ' mid' : ''), z);
-    s.style.inset = (4.5 + Math.sin(i * 1.7) * 0.8) + '%';
-    creamEls.push({ el: s, odd: i % 2 === 1 });
+    const defaultInset = (4.5 + Math.sin(i * 1.7) * 0.8) + '%';
+    s.style.inset = defaultInset;
+    creamEls.push({ el: s, odd: i % 2 === 1, bandIdx: i, bandLen: CREAM, defaultInset });
   }
   for (let i = 0; i < WAFER; i++, z += STEP) {
-    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1 });
+    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1, zone: 'upper', bandIdx: i, bandLen: WAFER });
   }
   topLayerEl = slice('top', z, makeTopSVG(SKINS[state.equippedSkin] || SKINS.classic));
-  slice('', z + .5, '').style.background =
+  const specLayerEl = slice('spec-glare', z + .5, '');
+  specLayerEl.style.background =
     'radial-gradient(circle at 30% 25%, rgba(255,255,255,.22), transparent 45%)';
 
   function applySkinVisuals() {
     const sk = SKINS[state.equippedSkin] || SKINS.classic;
-    waferEls.forEach(w => { w.el.style.background = w.odd ? sk.wafer1 : sk.wafer2; });
-    creamEls.forEach(c => { c.el.style.background = c.odd ? sk.cream2 : sk.cream1; });
+    const isShushik = state.equippedSkin === 'shushik' || sk.id === 'shushik';
+    stage.classList.toggle('skin-shushik-3d', isShushik);
+    cookie.classList.toggle('skin-shushik-3d', isShushik);
+
+    if (isShushik) {
+      bottomEdgeEl.style.background = "url('assets/skins/shushik_tap_cookie.png') center / 100% 100% no-repeat";
+      waferEls.forEach(w => {
+        w.el.style.background = '';
+        w.el.classList.toggle('shushik-lower-rim', w.zone === 'lower');
+        w.el.classList.toggle('shushik-upper-rim', w.zone === 'upper');
+        const yOff = ((w.bandIdx / Math.max(1, w.bandLen - 1)) * 22).toFixed(1);
+        w.el.style.backgroundSize = '100% 100%, 100% 28px';
+        w.el.style.backgroundPosition = `center center, calc(50% + var(--shushik-rim-x, 0px)) calc(100% + ${yOff}px)`;
+      });
+      creamEls.forEach(c => {
+        c.el.style.background = '';
+        c.el.style.inset = '2.2%';
+        c.el.classList.add('shushik-ruby-interlayer');
+        const yOff = ((c.bandIdx / Math.max(1, c.bandLen - 1)) * 24).toFixed(1);
+        c.el.style.backgroundSize = '100% 100%, 100% 30px';
+        c.el.style.backgroundPosition = `center center, calc(50% + var(--shushik-rim-x, 0px)) calc(100% + ${yOff}px)`;
+      });
+      specLayerEl.style.background =
+        'radial-gradient(circle at 32% 24%, rgba(240, 234, 214, 0.18), rgba(237, 28, 36, 0.08) 42%, transparent 60%)';
+    } else {
+      bottomEdgeEl.style.background = '';
+      waferEls.forEach(w => {
+        w.el.classList.remove('shushik-lower-rim', 'shushik-upper-rim');
+        w.el.style.backgroundSize = '';
+        w.el.style.backgroundPosition = '';
+        w.el.style.background = w.odd ? sk.wafer1 : sk.wafer2;
+      });
+      creamEls.forEach(c => {
+        c.el.classList.remove('shushik-ruby-interlayer');
+        c.el.style.inset = c.defaultInset;
+        c.el.style.backgroundSize = '';
+        c.el.style.backgroundPosition = '';
+        c.el.style.background = c.odd ? sk.cream2 : sk.cream1;
+      });
+      specLayerEl.style.background =
+        'radial-gradient(circle at 30% 25%, rgba(255,255,255,.22), transparent 45%)';
+    }
+
     if (topLayerEl) topLayerEl.innerHTML = makeTopSVG(sk);
-    document.documentElement.style.setProperty('--glow-color', sk.glow);
-    $('activeSkinChip').innerHTML = `${sk.icon}<small>×${sk.mult}</small>`;
+    document.documentElement.style.setProperty('--glow-color', isShushik ? 'rgba(139, 26, 40, 0.55)' : sk.glow);
+    const chipIconHtml = isShushik
+      ? `<img class="shushik-hud-star" src="assets/skins/shushik_badge_star.png" alt="★">`
+      : sk.icon;
+    $('activeSkinChip').innerHTML = `${chipIconHtml}<small>×${sk.mult}</small>`;
     if (window.BirchGames && window.BirchGames.onSkinChanged) window.BirchGames.onSkinChanged(state.equippedSkin);
   }
   applySkinVisuals();
@@ -1100,9 +1224,14 @@
     const floatY = Math.sin(time * 1.6) * 8;
     const idleRX = Math.sin(time * 1.1) * 2.5;
     const idleRZ = Math.cos(time * .9) * 3;
+    const rotZ = spin.x + idleRZ;
     wrap.style.transform =
       `translateY(${floatY + press.x * 14}px) scale(${scale.x}) ` +
-      `rotateX(${BASE_X + tiltX.x + idleRX}deg) rotateY(${tiltY.x}deg) rotateZ(${spin.x + idleRZ}deg)`;
+      `rotateX(${BASE_X + tiltX.x + idleRX}deg) rotateY(${tiltY.x}deg) rotateZ(${rotZ}deg)`;
+    if (state.equippedSkin === 'shushik') {
+      cookie.style.setProperty('--shushik-counter-z', `${(-rotZ).toFixed(2)}deg`);
+      cookie.style.setProperty('--shushik-rim-x', `${(rotZ * 2.8).toFixed(1)}px`);
+    }
     glow.style.opacity = .75 + Math.sin(time * 1.6) * .15 + Math.min(.5, Math.abs(scale.x - 1) * 4);
     requestAnimationFrame(frame);
   }
@@ -1790,9 +1919,16 @@
 
   function popNumber(x, y, crit, text) {
     const el = document.createElement('div');
-    el.className = 'pop';
+    const isShushik = state.equippedSkin === 'shushik';
+    el.className = 'pop' + (isShushik ? ' shushik-pop' : '') + (crit ? ' crit' : '');
     el.textContent = text || '+1';
-    if (crit) {
+    if (isShushik) {
+      el.style.color = crit ? '#ED1C24' : '#F0EAD6';
+      if (crit) el.style.fontSize = 'clamp(30px, 7.5vmin, 52px)';
+      el.style.textShadow = crit
+        ? '0 3px 0 #8B1A28, 0 0 18px #F0EAD6, 0 8px 26px rgba(237, 28, 36, 0.96)'
+        : '0 3px 0 #8B1A28, 0 0 14px #ED1C24, 0 6px 22px rgba(139, 26, 40, 0.92)';
+    } else if (crit) {
       el.style.color = '#ffd76a';
       el.style.fontSize = 'clamp(30px, 7.5vmin, 52px)';
       el.style.textShadow = '0 3px 0 #c9541a, 0 6px 22px rgba(255,140,40,.9)';
@@ -1809,15 +1945,21 @@
   }
 
   function sparks(x, y) {
+    const isShushik = state.equippedSkin === 'shushik';
     if (window.BirchGames && window.BirchGames.isExclusiveSkin && window.BirchGames.isExclusiveSkin(state.equippedSkin)) {
       window.BirchGames.spawnParticles(state.equippedSkin, x, y);
-      return;
+      if (!isShushik) return;
     }
+    const shushikColors = ['#ED1C24', '#F0EAD6', '#8B1A28'];
     const isGold = state.equippedSkin === 'gold' || state.equippedSkin === 'twix';
     for (let i = 0; i < 7; i++) {
       const s = document.createElement('div');
       s.className = 'spark';
-      if (isGold) {
+      if (isShushik) {
+        const sc = shushikColors[i % shushikColors.length];
+        s.style.background = sc;
+        s.style.boxShadow = `0 0 12px ${sc}, 0 0 6px #ED1C24`;
+      } else if (isGold) {
         s.style.background = '#ffd740';
         s.style.boxShadow = '0 0 10px #ffd740';
       }
@@ -2220,6 +2362,15 @@
 
   function skinMini(sk, px) {
     px = px || 56;
+    if (sk && (sk.id === 'shushik' || sk.previewImg)) {
+      const cookieSrc = sk.previewImg || 'assets/skins/shushik_tap_cookie.png';
+      const badgeSrc = sk.badgeImg || 'assets/skins/shushik_badge_star.png';
+      const bSize = Math.max(18, Math.round(px * 0.36));
+      return `<span class="mini shushik-mini-wrap" style="width:${px}px;height:${px}px">
+        <img class="shushik-mini-cookie" src="${cookieSrc}" width="${px}" height="${px}" alt="${sk.name || 'Шушик'}" draggable="false">
+        <img class="shushik-mini-badge" src="${badgeSrc}" width="${bSize}" height="${bSize}" alt="★" draggable="false">
+      </span>`;
+    }
     return `<svg class="mini" width="${px}" height="${px}" viewBox="0 0 100 100">
       <circle cx="50" cy="50" r="46" fill="${sk.wafer2}" stroke="${sk.cream1}" stroke-width="5"/>
       <circle cx="50" cy="50" r="37" fill="${sk.svgStop1}"/>
@@ -2279,10 +2430,17 @@
     const isOn = state.equippedSkin === id;
     const canSell = owned > 1 || (owned === 1 && id !== 'classic');
     const payout = roundCoin(sk.marketPrice * 0.85);
+    const shushikExtraBadges = id === 'shushik'
+      ? `<div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:6px 0 8px">
+           <span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:#F0EAD6;background:rgba(139,26,40,.45);border:1px solid #ED1C24;padding:3px 9px;border-radius:99px"><img src="assets/skins/shushik_badge_star.png" alt="" style="width:16px;height:16px"> Бейдж «Шушик»</span>
+           <span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:800;color:#F0EAD6;background:rgba(139,26,40,.45);border:1px solid #ED1C24;padding:3px 9px;border-radius:99px"><img src="assets/skins/shushik_token_chip.png" alt="" style="width:16px;height:16px"> Фишка игрока</span>
+         </div>`
+      : '';
     showModal(`
       <div class="win-burst" style="--rc:${skinColor(sk)}"><div class="win-rays"></div>${skinMini(sk, 110)}</div>
       <div><span class="skin-badge ${sk.rarityCls}" style="margin:0">${sk.rarity}</span></div>
       <h3>${sk.name}</h3>
+      ${shushikExtraBadges}
       <div class="win-stats"><span>⚡ ×${sk.mult}</span><span>📦 ${owned}</span><span>🪙 ${fmt(sk.marketPrice)}</span></div>
       ${owned > 0 ? `<button class="modal-btn primary" id="skEquip" ${isOn ? 'disabled style="opacity:.55"' : ''}>${isOn ? '✓ Надет' : '🍪 Надеть'}</button>` : `<div style="opacity:.7;margin-bottom:12px">🔒 Выбей в кейсах</div>`}
       ${canSell ? `<button class="modal-btn ghost" id="skSell">📈 Продать · +${fmt(payout)} 🪙</button>` : ''}
@@ -2593,9 +2751,12 @@
   function userAvatarHtml(r, sk, px) {
     const src = r.photo || (r.id ? `/.netlify/functions/bot?action=avatar&user_id=${encodeURIComponent(r.id)}` : '');
     if (!src) return skinMini(sk, px);
+    const skinBadgeHtml = (sk && sk.id === 'shushik')
+      ? `<img src="assets/skins/shushik_badge_star.png" style="width:16px;height:16px;display:block;object-fit:contain" alt="★">`
+      : sk.icon;
     return `<div class="u-av-wrap" style="width:${px}px;height:${px}px;--rc:${skinColor(sk)}">
       <img class="u-av" width="${px}" height="${px}" src="${src}" onerror="this.parentElement.outerHTML=this.dataset.fb" data-fb="${skinMini(sk, px).replace(/"/g, '&quot;')}">
-      <span class="u-av-skin">${sk.icon}</span>
+      <span class="u-av-skin">${skinBadgeHtml}</span>
     </div>`;
   }
 

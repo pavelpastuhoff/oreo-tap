@@ -1094,10 +1094,12 @@
         const canAccept = !isMine && (!ch.opponentId || String(ch.opponentId) === me.id) && ch.status === 'pending';
         const isParticipant = isMine || String(ch.opponentId) === me.id;
         const gTitle = ch.game === 'chess' ? '♟ Шахматы' : '🃏 Покер 1v1';
+        const chBadges = shushikInlineBadgesHtml(ch.challengerId, ch.challengerSkin);
+        const oppBadges = ch.opponentId ? shushikInlineBadgesHtml(ch.opponentId, ch.opponentSkin) : '';
         return `
           <div class="bg-item">
             <div class="grow">
-              <b>${gTitle} • ${esc(ch.challengerName)} ${ch.opponentName ? `vs ${esc(ch.opponentName)}` : '(Открытый стол)'}</b>
+              <b>${gTitle} • ${esc(ch.challengerName)}${chBadges} ${ch.opponentName ? `vs ${esc(ch.opponentName)}${oppBadges}` : '(Открытый стол)'}</b>
               <small>Ставка: <b>${fmt(ch.bet)} 🪙</b> (Банк: ${fmt((ch.bet || 0) * 2)} 🪙) • Статус: ${esc(ch.status)}</small>
             </div>
             <div class="bg-row">
@@ -1134,7 +1136,7 @@
         ${arr.slice(0, 20).map(p => `
           <div class="bg-item ${String(_duelTargetId) === String(p.id) ? 'sel' : ''}" data-opp="${esc(p.id)}" data-oppname="${esc(p.name)}">
             <div class="grow">
-              <b>👤 ${esc(p.name)} ${p.username ? `@${esc(p.username)}` : ''}</b>
+              <b>👤 ${esc(p.name)} ${p.username ? `@${esc(p.username)}` : ''}${shushikInlineBadgesHtml(p.id, p.skin || p.equippedSkin)}</b>
               <small>Капитал: ${fmt(p.coins || 0)} 🪙</small>
             </div>
             <span class="bg-chip">Выбрать</span>
@@ -1153,6 +1155,7 @@
   // Эскроу создание и принятие вызова через runTransaction
   async function createEscrowDuelChallenge(targetId, game, bet, vsBot = false) {
     const me = getMe();
+    const mySkin = getLocalState().equippedSkin || 'classic';
     bet = Math.max(100, Math.round(Number(bet) || 10000));
     if (getCoins() < bet) {
       toast(`❌ Недостаточно коинов для ставки ${fmt(bet)} 🪙!`);
@@ -1161,15 +1164,16 @@
 
     const newCoins = getCoins() - bet;
     updateLocalWallet({ coins: newCoins });
-    await fbPatch(`players/${encodeURIComponent(me.id)}`, { coins: newCoins, taps: newCoins, count: newCoins, ts: Date.now() });
+    await fbPatch(`players/${encodeURIComponent(me.id)}`, { coins: newCoins, taps: newCoins, count: newCoins, skin: mySkin, ts: Date.now() });
 
     let oppName = '';
     let oppUname = '';
+    let oppSkin = '';
     if (vsBot) {
       oppName = '🤖 Берёзовый Леший';
     } else if (targetId) {
       const opp = await fbGet(`players/${encodeURIComponent(targetId)}`);
-      if (opp) { oppName = opp.name || ''; oppUname = opp.username || ''; }
+      if (opp) { oppName = opp.name || ''; oppUname = opp.username || ''; oppSkin = opp.skin || opp.equippedSkin || ''; }
     }
 
     const cid = `duel_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1179,9 +1183,11 @@
       challengerId: me.id,
       challengerName: me.name,
       challengerUsername: me.username,
+      challengerSkin: mySkin,
       opponentId: vsBot ? 'birch_ai_bot' : (targetId || ''),
       opponentName: oppName,
       opponentUsername: oppUname,
+      opponentSkin: oppSkin,
       game,
       gameTitle: game === 'chess' ? '♟ Берёзовые Шахматы' : '🃏 Берёзовый Покер 1v1',
       bet,
@@ -1213,6 +1219,7 @@
 
   async function acceptEscrowDuelChallenge(cid) {
     const me = getMe();
+    const mySkin = getLocalState().equippedSkin || 'classic';
     const ch = await fbGet(`duel_challenges/${encodeURIComponent(cid)}`);
     if (!ch || ch.status !== 'pending') return toast('⚠️ Вызов уже недоступен');
     const bet = Math.max(0, Number(ch.bet) || 0);
@@ -1225,6 +1232,7 @@
       cur.opponentId = me.id;
       cur.opponentName = me.name;
       cur.opponentUsername = me.username;
+      cur.opponentSkin = mySkin;
       cur.pot = bet * 2;
       cur.status = 'active';
       cur.acceptedAt = Date.now();
@@ -1236,12 +1244,12 @@
     if (String(ch.challengerId) !== me.id) {
       const nextC = getCoins() - bet;
       updateLocalWallet({ coins: nextC });
-      await fbPatch(`players/${encodeURIComponent(me.id)}`, { coins: nextC, taps: nextC, count: nextC, ts: Date.now() });
+      await fbPatch(`players/${encodeURIComponent(me.id)}`, { coins: nextC, taps: nextC, count: nextC, skin: mySkin, ts: Date.now() });
     }
 
     if (ch.game === 'chess') {
       await fbPatch(`duel_matches/${encodeURIComponent(cid)}`, {
-        blackId: me.id, blackName: me.name, pot: bet * 2, status: 'active', lastMoveTs: Date.now()
+        blackId: me.id, blackName: me.name, blackSkin: mySkin, pot: bet * 2, status: 'active', lastMoveTs: Date.now()
       });
       _subView = { type: 'chess', id: cid, isTournament: false };
     } else {
@@ -1351,8 +1359,10 @@
       id: cid,
       whiteId: chObj.challengerId,
       whiteName: chObj.challengerName,
+      whiteSkin: chObj.challengerSkin || '',
       blackId: vsBot ? 'birch_ai_bot' : (chObj.opponentId || ''),
       blackName: vsBot ? '🤖 Берёзовый Леший' : (chObj.opponentName || 'Ожидание соперника...'),
+      blackSkin: vsBot ? '' : (chObj.opponentSkin || ''),
       vsBot: Boolean(vsBot),
       bet: chObj.bet,
       pot: chObj.bet * 2,
@@ -1480,11 +1490,25 @@
       botBadge.className = `bg-piece-badge ${topIsBlack ? 'w' : 'b'}`;
       botBadge.textContent = topIsBlack ? '♔' : '♚';
 
-      body.querySelector('#chessTopName').textContent = topIsBlack ? (m.blackName || 'Ожидание...') : (m.whiteName || 'Соперник');
+      const topId = topIsBlack ? m.blackId : m.whiteId;
+      const topSkin = topIsBlack ? m.blackSkin : m.whiteSkin;
+      const botId = topIsBlack ? m.whiteId : m.blackId;
+      const botSkin = topIsBlack ? m.whiteSkin : m.blackSkin;
+      const topIsShushik = isPlayerShushikSkin(topId, topSkin);
+      const botIsShushik = isPlayerShushikSkin(botId, botSkin);
+
+      const topClockEl = body.querySelector('#chessTopClock');
+      const botClockEl = body.querySelector('#chessBotClock');
+      if (topClockEl) topClockEl.classList.toggle('shushik-vip', topIsShushik);
+      if (botClockEl) botClockEl.classList.toggle('shushik-vip', botIsShushik);
+
+      const topRawName = topIsBlack ? (m.blackName || 'Ожидание...') : (m.whiteName || 'Соперник');
+      const botRawName = topIsBlack ? (m.whiteName || 'Вы') : (m.blackName || 'Вы');
+      body.querySelector('#chessTopName').innerHTML = `${esc(topRawName)}${shushikInlineBadgesHtml(topId, topSkin)}`;
       body.querySelector('#chessTopSub').textContent = topIsBlack ? 'Чёрные фигуры' : 'Белые фигуры';
-      body.querySelector('#chessBotName').textContent = topIsBlack ? (m.whiteName || 'Вы') : (m.blackName || 'Вы');
-      body.querySelector('#chessBotSub').textContent = `${topIsBlack ? 'Белые фигуры' : 'Чёрные фигуры'} • Ставка ${fmt(m.bet || 0)} 🪙`;
-      body.querySelector('#chessPotChip').textContent = `Банк: ${fmt(m.pot || 0)} 🪙`;
+      body.querySelector('#chessBotName').innerHTML = `${esc(botRawName)}${shushikInlineBadgesHtml(botId, botSkin)}`;
+      body.querySelector('#chessBotSub').innerHTML = `${topIsBlack ? 'Белые фигуры' : 'Чёрные фигуры'} • Ставка ${botIsShushik ? `<img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt=""> ` : ''}${fmt(m.bet || 0)} 🪙`;
+      body.querySelector('#chessPotChip').innerHTML = `${(topIsShushik || botIsShushik) ? `<img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt=""> ` : ''}Банк: ${fmt(m.pot || 0)} 🪙`;
 
       updateClocksDom(m);
 
@@ -2112,6 +2136,7 @@
 
   async function seatPlayerAtPokerTable(tid, title, isTournament, addSticks, blindLevel = 1) {
     const me = getMe();
+    const mySkin = getLocalState().equippedSkin || 'classic';
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
       if (!tbl) {
         tbl = {
@@ -2124,6 +2149,7 @@
       const ex = tbl.seats.find(s => String(s.id) === me.id);
       if (ex) {
         ex.stack = (Number(ex.stack) || 0) + addSticks;
+        ex.skin = mySkin;
         ex.busted = false;
         ex.status = 'Готов 🪓';
       } else if (tbl.seats.length < 6) {
@@ -2131,6 +2157,7 @@
           id: me.id,
           name: me.name,
           photo: me.photo,
+          skin: mySkin,
           stack: addSticks,
           bet: 0,
           totalBet: 0,
@@ -2660,7 +2687,8 @@
           seatsLayer.appendChild(seatEl);
         }
 
-        seatEl.className = `bg-seat${isTurn ? ' turn' : ''}${isMe ? ' me' : ''}${s.folded ? ' folded' : ''}${s.busted ? ' busted' : ''}`;
+        const isShushikSeat = isPlayerShushikSkin(s.id, s.skin);
+        seatEl.className = `bg-seat${isTurn ? ' turn' : ''}${isMe ? ' me' : ''}${isShushikSeat ? ' shushik-vip' : ''}${s.folded ? ' folded' : ''}${s.busted ? ' busted' : ''}`;
         seatEl.style.left = pos.left;
         seatEl.style.top = pos.top;
         seatEl.setAttribute('data-seatidx', String(idx));
@@ -2686,20 +2714,26 @@
 
         const avaEl = seatEl.querySelector('.bg-ava');
         avaEl.style.setProperty('--p', remRatio.toFixed(2));
-        const avaSig = s.photo ? `img:${s.photo}` : `txt:${(s.name || 'И')[0]}`;
+        const avaSig = `${s.photo ? 'img:' + s.photo : 'txt:' + (s.name || 'И')[0]}|sh:${isShushikSeat ? 1 : 0}`;
         if (avaEl.getAttribute('data-avasig') !== avaSig) {
           avaEl.setAttribute('data-avasig', avaSig);
-          avaEl.innerHTML = s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`;
+          const starBadgeHtml = isShushikSeat
+            ? `<img class="bg-ava-shushik-star" src="assets/skins/shushik_badge_star.png" alt="★">`
+            : '';
+          avaEl.innerHTML = (s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`) + starBadgeHtml;
         }
 
         seatEl.querySelector('.bg-sname').textContent = s.name || '';
-        seatEl.querySelector('.bg-sstack').innerHTML = `${stickSvg(false)} ${fmt(s.stack)}`;
+        const chipHtml = isShushikSeat
+          ? `<img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt="●">`
+          : stickSvg(false);
+        seatEl.querySelector('.bg-sstack').innerHTML = `${chipHtml} ${fmt(s.stack)}`;
         seatEl.querySelector('.bg-sstatus').textContent = s.status || '';
         const dEl = seatEl.querySelector('.bg-dealer');
         if (dEl) dEl.hidden = tbl.dealerIdx !== idx;
 
         const betWrap = seatEl.querySelector('.bg-sbet-wrap');
-        betWrap.innerHTML = s.bet > 0 ? `<div class="bg-sbet">${stickSvg(false)} ${fmt(s.bet)}</div>` : '';
+        betWrap.innerHTML = s.bet > 0 ? `<div class="bg-sbet${isShushikSeat ? ' shushik-bet' : ''}">${chipHtml} ${fmt(s.bet)}</div>` : '';
       });
 
       // Обновляем общие карты борда (флоп, тёрн, ривер) только при изменении борда
@@ -2933,63 +2967,43 @@
       <text x="100" y="177" text-anchor="middle" font-family="monospace" font-weight="900" font-size="7.5" fill="#a29bfe">SCENE 67 • TAKE 1 • 4K</text>
     </svg>`;
 
+  // Предзагрузка 5 текстур 3D-скина «Шушик» через new Image() для мгновенного отображения без мигания
+  const SHUSHIK_TEXTURE_URLS = [
+    'assets/skins/shushik_tap_cookie.png',
+    'assets/skins/shushik_tap_cookie_sidewall.png',
+    'assets/skins/shushik_tap_cookie_interlayer.png',
+    'assets/skins/shushik_badge_star.png',
+    'assets/skins/shushik_token_chip.png'
+  ];
+  const _shushikPreloadPool = SHUSHIK_TEXTURE_URLS.map(src => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = src;
+    return img;
+  });
+
+  function isPlayerShushikSkin(uid, explicitSkin = '') {
+    if (explicitSkin === 'shushik') return true;
+    const idStr = String(uid || '');
+    if (!idStr || idStr === 'birch_ai_bot') return false;
+    if (idStr === getMe().id && (getLocalState().equippedSkin || '') === 'shushik') return true;
+    const cachedPlayers = _memCache.get('players');
+    const p = cachedPlayers && cachedPlayers.data && cachedPlayers.data[idStr];
+    if (p && (p.skin === 'shushik' || p.equippedSkin === 'shushik')) return true;
+    return false;
+  }
+
+  function shushikInlineBadgesHtml(uid, explicitSkin = '') {
+    if (!isPlayerShushikSkin(uid, explicitSkin)) return '';
+    return `<span class="bg-shushik-inline-badges" title="Эксклюзивный скин Шушик"><img class="bg-shushik-star-ico" src="assets/skins/shushik_badge_star.png" alt="★"><img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt="●"></span>`;
+  }
+
   const SHUSHIK_SVG = `
-    <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <radialGradient id="velvetDark" cx="50%" cy="45%" r="65%">
-          <stop offset="0%" stop-color="#221d24"/>
-          <stop offset="60%" stop-color="#0f0c12"/>
-          <stop offset="100%" stop-color="#050307"/>
-        </radialGradient>
-        <linearGradient id="platMask" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#ffffff"/>
-          <stop offset="35%" stop-color="#d7dde8"/>
-          <stop offset="65%" stop-color="#7f8c9f"/>
-          <stop offset="100%" stop-color="#eef2f7"/>
-        </linearGradient>
-        <radialGradient id="crimsonRose" cx="35%" cy="35%" r="65%">
-          <stop offset="0%" stop-color="#ff5c7c"/>
-          <stop offset="55%" stop-color="#d50032"/>
-          <stop offset="100%" stop-color="#560014"/>
-        </radialGradient>
-        <filter id="redNeonGlow" x="-30%" y="-30%" width="160%" height="160%">
-          <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#ff003c" flood-opacity=".95"/>
-        </filter>
-      </defs>
-      <!-- Матовая основа глубокого графитово-чёрного бархата -->
-      <circle cx="100" cy="100" r="99" fill="url(#velvetDark)" stroke="#4a091c" stroke-width="2.5"/>
-      <circle cx="100" cy="100" r="68" fill="none" stroke="#ff1744" stroke-width="1.2" opacity=".45"/>
-      <!-- Густой венок объёмных алых роз с каплями росы по кругу -->
-      ${Array.from({ length: 12 }, (_, i) => {
-        const a = (i / 12) * Math.PI * 2;
-        const rx = (100 + Math.cos(a) * 82).toFixed(1);
-        const ry = (100 + Math.sin(a) * 82).toFixed(1);
-        const dx = (Number(rx) + 5).toFixed(1);
-        const dy = (Number(ry) - 5).toFixed(1);
-        return `
-          <g>
-            <circle cx="${rx}" cy="${ry}" r="15.5" fill="url(#crimsonRose)" stroke="#3a000d" stroke-width="1.4"/>
-            <path d="M${Number(rx)-7} ${ry} Q${rx} ${Number(ry)-9} ${Number(rx)+7} ${ry} Q${rx} ${Number(ry)+8} ${Number(rx)-5} ${Number(ry)+2}" fill="none" stroke="#ff9eb5" stroke-width="1.3" opacity=".8"/>
-            <circle cx="${dx}" cy="${dy}" r="2.3" fill="#e0f7fa" opacity=".92"/>
-          </g>`;
-      }).join('')}
-      <!-- Внутреннее неоновое алое свечение за маской -->
-      <circle cx="100" cy="100" r="46" fill="rgba(255,0,60,.16)"/>
-      <!-- Полированная серебряно-платиновая кошачья полумаска с заострёнными ушками -->
-      <g filter="url(#redNeonGlow)">
-        <path d="M58 98 L62 52 L85 73 Q100 68 115 73 L138 52 L142 98 C142 119,122 132,108 126 L100 119 L92 126 C78 132,58 119,58 98 Z"
-              fill="url(#platMask)" stroke="#ffffff" stroke-width="1.8" stroke-linejoin="round"/>
-        <!-- Внутренние грани ушек с рубиновым отблеском -->
-        <polygon points="66,59 65,78 80,74" fill="#b0003a"/>
-        <polygon points="134,59 135,78 120,74" fill="#b0003a"/>
-        <!-- Раскосые прорези глаз с красным внутренним неоновым свечением -->
-        <path d="M68 97 Q80 88 92 99 Q80 106 68 97 Z" fill="#ff003c" stroke="#2b000b" stroke-width="1.5"/>
-        <path d="M132 97 Q120 88 108 99 Q120 106 132 97 Z" fill="#ff003c" stroke="#2b000b" stroke-width="1.5"/>
-        <ellipse cx="80" cy="97" rx="5" ry="1.8" fill="#ffdde6"/>
-        <ellipse cx="120" cy="97" rx="5" ry="1.8" fill="#ffdde6"/>
-      </g>
-      <text x="100" y="149" text-anchor="middle" font-family="Georgia, serif" font-weight="900" font-size="11.5" fill="#ffd1dc" letter-spacing="1.6">SHUSHIK</text>
-    </svg>`;
+    <div class="bg-shushik-case-preview">
+      <img class="bg-shushik-case-cookie" src="assets/skins/shushik_tap_cookie.png" alt="Шушик">
+      <img class="bg-shushik-case-star" src="assets/skins/shushik_badge_star.png" alt="★">
+      <img class="bg-shushik-case-chip" src="assets/skins/shushik_token_chip.png" alt="●">
+    </div>`;
 
   const SKINS = {
     airochai: {
@@ -3040,17 +3054,22 @@
       rarityCls: 'rarity-mythic',
       mult: 7.0,
       marketPrice: 7777777,
-      wafer1: '#0d0910',
-      wafer2: '#1a0e17',
-      cream1: '#d50032',
-      cream2: '#e2e8f0',
-      svgStop1: '#221d24',
-      svgStop2: '#050307',
-      stroke: '#ff1744',
-      textFill: '#ffd1dc',
-      glow: 'rgba(255,15,75,.75)',
+      wafer1: '#1c0c09',
+      wafer2: '#2b120e',
+      cream1: '#8B1A28',
+      cream2: '#ED1C24',
+      svgStop1: '#2b120e',
+      svgStop2: '#120608',
+      stroke: '#ED1C24',
+      textFill: '#F0EAD6',
+      glow: 'rgba(139, 26, 40, 0.55)',
+      previewImg: 'assets/skins/shushik_tap_cookie.png',
+      sidewallImg: 'assets/skins/shushik_tap_cookie_sidewall.png',
+      interlayerImg: 'assets/skins/shushik_tap_cookie_interlayer.png',
+      badgeImg: 'assets/skins/shushik_badge_star.png',
+      chipImg: 'assets/skins/shushik_token_chip.png',
       customSvg: SHUSHIK_SVG,
-      desc: 'Самый дорогой и эксклюзивный скин: чёрный бархат в алых розах с росой и платиновая кошачья полумаска с неоновым свечением.'
+      desc: 'Эксклюзивное объёмное 3D-печенье с барельефом кошачьей маски и розами, ребристым шоколадным ободом, рубиновой прослойкой, металлической звездой и личным жетоном игрока.'
     }
   };
 
@@ -3195,6 +3214,10 @@
       if (b.applySkinVisuals) b.applySkinVisuals();
     }
     applyExclusiveSkinTheme(skinId);
+    const me = getMe();
+    if (me && me.id) {
+      fbPatch(`players/${encodeURIComponent(me.id)}`, { skin: skinId, ts: Date.now() }).catch(() => {});
+    }
   }
 
   // Оптимизированный спавнер DOM-частиц с авто-очисткой по animationend (без утечек памяти)
@@ -3202,9 +3225,9 @@
     if (!SKINS[skinId]) return;
     const frag = document.createDocumentFragment();
 
-    if (skinId === 'denis_lykasov') {
+    if (skinId === 'denis_lykasov' || skinId === 'shushik') {
       const ring = document.createElement('div');
-      ring.className = 'bg-tap-particle flash-ring';
+      ring.className = 'bg-tap-particle ' + (skinId === 'shushik' ? 'shushik-ring' : 'flash-ring');
       ring.style.setProperty('--x0', `${x}px`);
       ring.style.setProperty('--y0', `${y}px`);
       ring.addEventListener('animationend', () => ring.remove(), { once: true });
@@ -3216,13 +3239,19 @@
       ? ['🍃', '🍂', '✨', '茶', '🍃', '✨']
       : skinId === 'denis_lykasov'
         ? ['[ ]', '|ll|', '🎞️', '⌜ ⌝', 'ılılı', '🎬']
-        : ['❤️‍🔥', '🌹', '✨', '♥️', '🌹', '💖'];
+        : ['🌹', '✦', '♥️', '🌹', '✧', '❤️‍🔥'];
 
     for (let i = 0; i < count; i++) {
       const el = document.createElement('div');
       const isCinemaTag = skinId === 'denis_lykasov' && (i % 2 === 0);
       el.className = 'bg-tap-particle' + (isCinemaTag ? ' cinema-tag' : '');
-      el.textContent = symbols[i % symbols.length];
+      if (skinId === 'shushik' && i === 0) {
+        el.innerHTML = `<img src="assets/skins/shushik_badge_star.png" alt="" style="width:18px;height:18px;display:block">`;
+      } else if (skinId === 'shushik' && i === 5) {
+        el.innerHTML = `<img src="assets/skins/shushik_token_chip.png" alt="" style="width:17px;height:17px;display:block">`;
+      } else {
+        el.textContent = symbols[i % symbols.length];
+      }
 
       // Для Шушика — красивый раскрывающийся веер вверх и в стороны
       const angle = skinId === 'shushik'
@@ -3246,7 +3275,10 @@
         el.style.color = '#ffd54f';
         el.style.textShadow = '0 0 8px #ffb300';
       } else if (skinId === 'shushik') {
-        el.style.filter = 'drop-shadow(0 0 6px rgba(255,20,75,.85))';
+        const shPalette = ['#ED1C24', '#F0EAD6', '#8B1A28'];
+        el.style.color = shPalette[i % shPalette.length];
+        el.style.textShadow = '0 0 8px #ED1C24, 0 2px 6px #8B1A28';
+        el.style.filter = 'drop-shadow(0 2px 6px rgba(139, 26, 40, 0.85))';
       }
 
       el.addEventListener('animationend', () => el.remove(), { once: true });
@@ -3329,6 +3361,7 @@
             const sk = SKINS[c.skinId];
             const isOwned = Boolean(unlocked[c.skinId]);
             const isEquipped = curEquipped === c.skinId;
+            const isShushikCase = c.skinId === 'shushik';
             return `
               <div class="bg-case-card ${c.vipClass}">
                 <div class="bg-case-preview">${sk.customSvg}</div>
@@ -3338,6 +3371,12 @@
                     <span class="bg-chip gold">×${sk.mult} к тапу</span>
                   </div>
                   <div style="font-size:10px;color:#ffd9a0;font-weight:800;margin:2px 0">${esc(c.subtitle)}</div>
+                  ${isShushikCase ? `
+                    <div class="bg-row" style="gap:6px;margin:4px 0">
+                      <span class="bg-chip" style="border-color:#ED1C24;color:#F0EAD6;background:rgba(139,26,40,.42)"><img class="bg-shushik-star-ico" src="assets/skins/shushik_badge_star.png" alt=""> Бейдж звезды</span>
+                      <span class="bg-chip" style="border-color:#ED1C24;color:#F0EAD6;background:rgba(139,26,40,.42)"><img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt=""> Фишка за столами</span>
+                    </div>
+                  ` : ''}
                   <div class="bg-muted" style="margin-bottom:8px">${esc(sk.desc)}</div>
                   <div class="bg-row">
                     ${isOwned
