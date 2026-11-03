@@ -18,6 +18,8 @@ firebase-credentials*.json
 *credentials*.json
 *secret*.json
 *token*.json
+!assets/skins/*
+!assets/skins/**
 .firebaserc
 firebase-debug.log*
 *.pem
