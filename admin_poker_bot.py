@@ -2,9 +2,11 @@
 
 Интегрируется с bot.py и Firebase Realtime Database.
 """
+from datetime import datetime, timezone
 import html
 import json
 import os
+import sys
 import threading
 import time
 import urllib.parse
@@ -263,9 +265,208 @@ def admin_home_kb(webapp_url: str) -> dict:
             [{"text": "🃏 Создать турнир по покеру", "callback_data": "adm_tour_new"}],
             [{"text": "🏦 Управление Общим банком", "callback_data": "adm_bank"}],
             [{"text": "⚔️ Все активные дуэли 1v1", "callback_data": "adm_duels"}],
+            [{"text": "🧯 Выгрузить краш-логи (.txt)", "callback_data": "adm_crashes"}],
             [{"text": "« В главное меню бота", "callback_data": "tab_home"}],
         ]
     }
+
+
+def _resolve_bot_token() -> str:
+    env_tok = os.environ.get("BOT_TOKEN")
+    if env_tok:
+        return env_tok
+    for mod_name in ("bot", "__main__"):
+        mod = sys.modules.get(mod_name)
+        tok = getattr(mod, "TOKEN", None) if mod else None
+        if tok:
+            return tok
+    return "8607855282:AAHUDjxse-GuArMzqkljF12pq-oYD8uAIHs"
+
+
+def send_text_document(chat_id: int, filename: str, content_text: str, caption: str = "", reply_markup=None):
+    """Отправляет сформированный .txt файл в Telegram через multipart/form-data."""
+    token = _resolve_bot_token()
+    api_url = f"https://api.telegram.org/bot{token}/sendDocument"
+    boundary = f"----OreoCrashBoundary{uuid.uuid4().hex}"
+    body = bytearray()
+
+    fields = {"chat_id": str(chat_id), "parse_mode": "HTML"}
+    if caption:
+        fields["caption"] = caption
+    if reply_markup is not None:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+
+    for k, v in fields.items():
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f'Content-Disposition: form-data; name="{k}"\r\n\r\n'.encode("utf-8"))
+        body.extend(f"{v}\r\n".encode("utf-8"))
+
+    file_bytes = content_text.encode("utf-8")
+    body.extend(f"--{boundary}\r\n".encode("utf-8"))
+    body.extend(f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'.encode("utf-8"))
+    body.extend(b"Content-Type: text/plain; charset=utf-8\r\n\r\n")
+    body.extend(file_bytes)
+    body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+
+    req = urllib.request.Request(
+        api_url,
+        data=bytes(body),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        return json.load(resp)
+
+
+def _crash_matches_date(item: dict, date_filter: str) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not date_filter or date_filter == "all":
+        return True
+    if str(item.get("date") or "") == date_filter:
+        return True
+    ts = item.get("timestamp")
+    if ts:
+        try:
+            sec = float(ts) / 1000.0
+            local_ymd = datetime.fromtimestamp(sec).strftime("%Y-%m-%d")
+            utc_ymd = datetime.fromtimestamp(sec, tz=timezone.utc).strftime("%Y-%m-%d")
+            if local_ymd == date_filter or utc_ymd == date_filter:
+                return True
+        except (ValueError, TypeError, OSError):
+            pass
+    return False
+
+
+def build_crash_report_txt(date_filter: str = "") -> tuple:
+    """Формирует структурированный текстовый отчёт crashes_YYYY-MM-DD.txt для человека и ИИ-агента."""
+    target_date = (date_filter or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    raw = fb_get("crash_reports") or {}
+    all_items = []
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                entry = dict(v)
+                entry.setdefault("id", str(k))
+                all_items.append(entry)
+
+    filtered = [r for r in all_items if _crash_matches_date(r, target_date)]
+    filtered.sort(key=lambda r: int(r.get("timestamp") or 0))
+
+    unique_users = {}
+    tab_counts = {}
+    groups = {}
+
+    for r in filtered:
+        uid = str(r.get("userId") or "unknown")
+        uname = str(r.get("userName") or "—")
+        handle = f" @{r['username']}" if r.get("username") else ""
+        unique_users[uid] = f"{uname}{handle}".strip()
+
+        tab = str(r.get("activeTab") or "unknown")
+        tab_counts[tab] = tab_counts.get(tab, 0) + 1
+
+        msg = str(r.get("message") or "Unknown Error").strip()
+        sig = f"{msg} || {tab}"
+        ts = int(r.get("timestamp") or 0)
+        if sig not in groups:
+            groups[sig] = {
+                "message": msg,
+                "activeTab": tab,
+                "stack": str(r.get("stack") or "—"),
+                "count": 0,
+                "users": {},
+                "first_ts": ts,
+                "last_ts": ts,
+            }
+        g = groups[sig]
+        g["count"] += 1
+        g["users"][uid] = unique_users[uid]
+        if ts and (not g["first_ts"] or ts < g["first_ts"]):
+            g["first_ts"] = ts
+        if ts and ts > g["last_ts"]:
+            g["last_ts"] = ts
+
+    ranked_groups = sorted(groups.values(), key=lambda x: x["count"], reverse=True)
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
+
+    def fmt_ts(ms_val):
+        if not ms_val:
+            return "—"
+        try:
+            return datetime.fromtimestamp(float(ms_val) / 1000.0, tz=timezone.utc).isoformat()
+        except Exception:
+            return str(ms_val)
+
+    lines = [
+        "================================================================================",
+        f"OREO67 — CRASH TELEMETRY & DIAGNOSTIC REPORT ({target_date})",
+        f"Generated At : {now_iso}",
+        "Format       : Human-Readable & AI-Agent Structured Log v1.0",
+        "================================================================================",
+        "",
+        "[SECTION 1: EXECUTIVE SUMMARY]",
+        f"- Filter Period          : {target_date}",
+        f"- Total Crash Events     : {len(filtered)} (Total in DB: {len(all_items)})",
+        f"- Unique Error Groups    : {len(ranked_groups)}",
+        f"- Affected Users Count   : {len(unique_users)}",
+    ]
+    if unique_users:
+        u_summary = ", ".join(f"{u_id} ({u_nm})" for u_id, u_nm in unique_users.items())
+        lines.append(f"- Affected Users List    : {u_summary}")
+    tabs_str = " | ".join(f"{k}: {v}" for k, v in sorted(tab_counts.items(), key=lambda kv: kv[1], reverse=True))
+    lines.append(f"- Breakdown by Screen    : {tabs_str or 'none'}")
+    lines.append("")
+
+    lines.append("[SECTION 2: AGGREGATED ERROR SIGNATURES (RANKED BY FREQUENCY)]")
+    if not ranked_groups:
+        lines.append("No crash events recorded for this period.")
+    else:
+        for idx, g in enumerate(ranked_groups, 1):
+            u_str = ", ".join(f"{u_id} ({u_nm})" for u_id, u_nm in g["users"].items())
+            lines.append("--------------------------------------------------------------------------------")
+            lines.append(f"GROUP #{idx} | Occurrences: {g['count']}x | Affected Users ({len(g['users'])}): {u_str}")
+            lines.append(f"Screen / Mini-Game : {g['activeTab']}")
+            lines.append(f"First Seen (UTC)   : {fmt_ts(g['first_ts'])}")
+            lines.append(f"Last Seen (UTC)    : {fmt_ts(g['last_ts'])}")
+            lines.append(f"Error Message      : {g['message']}")
+            lines.append("Primary Stack Trace:")
+            for sl in g["stack"].splitlines()[:10]:
+                lines.append(f"  {sl}")
+    lines.append("")
+
+    lines.append("[SECTION 3: CHRONOLOGICAL CRASH EVENTS & USER BREADCRUMBS]")
+    for idx, r in enumerate(filtered, 1):
+        lines.append("--------------------------------------------------------------------------------")
+        lines.append(f"EVENT #{idx} | Key: {r.get('id', 'n/a')}")
+        lines.append(f"Timestamp   : {r.get('isoTime') or fmt_ts(r.get('timestamp'))} ({r.get('timestamp', 0)})")
+        handle = f" (@{r['username']})" if r.get("username") else ""
+        lines.append(f"Player      : ID={r.get('userId', 'anon')} | Name={r.get('userName', '—')}{handle}")
+        lines.append(f"ActiveTab   : {r.get('activeTab', 'unknown')}")
+        if r.get("source"):
+            lines.append(f"Source      : {r.get('source')}")
+        if r.get("userAgent"):
+            lines.append(f"UserAgent   : {r.get('userAgent')}")
+        lines.append(f"Message     : {r.get('message', '—')}")
+        lines.append("Stack Trace :")
+        for sl in str(r.get("stack") or "—").splitlines():
+            lines.append(f"  {sl}")
+
+        acts = r.get("recentActions") or []
+        if isinstance(acts, dict):
+            acts = list(acts.values())
+        lines.append(f"Recent User Actions ({len(acts)}):")
+        if not acts:
+            lines.append("  (no recorded actions prior to error)")
+        else:
+            for a_i, act in enumerate(acts, 1):
+                if isinstance(act, dict):
+                    lines.append(f"  {a_i}. [{act.get('time') or act.get('ts', '')}] {act.get('action', '')}")
+                else:
+                    lines.append(f"  {a_i}. {act}")
+
+    lines.append("================================================================================")
+    filename = f"crashes_{target_date}.txt"
+    return filename, "\n".join(lines), len(filtered), len(unique_users), len(all_items)
 
 
 def grant_exclusive_skin(target_uid: str, skin_id: str, call_fn, webapp_url: str) -> tuple:
@@ -883,6 +1084,28 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
         send_card_fn(chat_id, admin_home_text(), admin_home_kb(webapp_url))
         return True
 
+    if cmd == "/get_crashes":
+        _user_states.pop(user_id, None)
+        if not is_admin(user_id):
+            call_fn(
+                "sendMessage",
+                chat_id=chat_id,
+                text="⛔ <b>Доступ закрыт!</b> Выгрузка телеметрии доступна только основателю.",
+                parse_mode="HTML",
+            )
+            return True
+        parts = text_in.split(maxsplit=1)
+        arg_date = parts[1].strip() if len(parts) > 1 else datetime.now().strftime("%Y-%m-%d")
+        filename, report_txt, cnt, users_cnt, total_db = build_crash_report_txt(arg_date)
+        caption = (
+            f"🧯 <b>ОТЧЁТ TELEMETRY & CRASH LOGS</b>\n"
+            f"📅 <b>Период:</b> <code>{html.escape(arg_date)}</code>\n"
+            f"⚠️ <b>Ошибок за период:</b> <b>{cnt}</b> (всего в БД: {total_db})\n"
+            f"👥 <b>Затронуто игроков:</b> <b>{users_cnt}</b>"
+        )
+        send_text_document(chat_id, filename, report_txt, caption=caption)
+        return True
+
     if cmd == "/duel" or text_in in ("⚔️ Вызов 1v1", "⚔️ Дуэль"):
         _user_states.pop(user_id, None)
         text, kb = build_players_page(0, "duel", exclude_uid=str(user_id))
@@ -1245,6 +1468,39 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
                 "\n".join(lines),
                 {"inline_keyboard": [[{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}]]},
             )
+            return True
+
+        if data == "adm_crashes":
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            _, _, today_cnt, today_users, total_db = build_crash_report_txt(today_str)
+            info_text = (
+                "🧯 <b>СИСТЕМА TELEMETRY & КРАШ-ЛОГОВ</b>\n\n"
+                f"📅 <b>Текущая дата:</b> <code>{today_str}</code>\n"
+                f"⚠️ <b>Сбоев за сегодня:</b> <b>{today_cnt}</b> (затронуто игроков: <b>{today_users}</b>)\n"
+                f"🗄 <b>Всего записей в crash_reports:</b> <b>{total_db}</b>\n\n"
+                "Также доступна быстрая команда:\n"
+                "• <code>/get_crashes</code> — выгрузка за сегодня\n"
+                "• <code>/get_crashes YYYY-MM-DD</code> — за выбранную дату\n"
+                "• <code>/get_crashes all</code> — полный архив"
+            )
+            kb = {
+                "inline_keyboard": [
+                    [{"text": f"📥 Скачать crashes_{today_str}.txt ({today_cnt})", "callback_data": f"adm_crashes_dl:{today_str}"}],
+                    [{"text": f"📦 Скачать ВСЕ логи crashes_all.txt ({total_db})", "callback_data": "adm_crashes_dl:all"}],
+                    [{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}],
+                ]
+            }
+            edit_card_fn(chat_id, message_id, has_photo, info_text, kb)
+            return True
+
+        if data.startswith("adm_crashes_dl:"):
+            target_d = data.split(":", 1)[1] or datetime.now().strftime("%Y-%m-%d")
+            filename, report_txt, cnt, users_cnt, total_db = build_crash_report_txt(target_d)
+            caption = (
+                f"🧯 <b>Файл телеметрии:</b> <code>{html.escape(filename)}</code>\n"
+                f"⚠️ <b>Событий:</b> <b>{cnt}</b> • 👥 <b>Игроков:</b> <b>{users_cnt}</b> (в БД: {total_db})"
+            )
+            send_text_document(chat_id, filename, report_txt, caption=caption)
             return True
 
     # --------- СИСТЕМА ВЫЗОВОВ 1v1 (ДЛЯ ВСЕХ ИГРОКОВ) ---------

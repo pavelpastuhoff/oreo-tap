@@ -83,32 +83,47 @@
   const fmt = n => Math.round(Number(n) || 0).toLocaleString('ru-RU');
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  // ---------- FIREBASE REST + ONVALUE + RUNTRANSACTION ----------
-  async function fbGet(path) {
+  // ---------- FIREBASE REST + КЭШ ПАМЯТИ (0ms TAB SWITCH) + ONVALUE + RUNTRANSACTION ----------
+  const _memCache = new Map();
+
+  async function fbGet(path, signal) {
+    const clean = path.replace(/^\/+/, '');
     try {
-      const r = await fetch(`${getDbUrl()}/${path.replace(/^\/+/, '')}.json`, { cache: 'no-store' });
-      return r.ok ? await r.json() : null;
+      const r = await fetch(`${getDbUrl()}/${clean}.json`, { cache: 'no-store', signal });
+      if (!r.ok) return null;
+      const val = await r.json();
+      _memCache.set(clean, val);
+      return val;
     } catch (e) { return null; }
   }
   async function fbPut(path, data) {
+    const clean = path.replace(/^\/+/, '');
+    _memCache.set(clean, data);
     try {
-      const r = await fetch(`${getDbUrl()}/${path.replace(/^\/+/, '')}.json`, {
+      const r = await fetch(`${getDbUrl()}/${clean}.json`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
       });
       return r.ok ? await r.json() : null;
     } catch (e) { return null; }
   }
   async function fbPatch(path, data) {
+    const clean = path.replace(/^\/+/, '');
+    const prev = _memCache.get(clean);
+    if (prev && typeof prev === 'object' && data && typeof data === 'object') {
+      _memCache.set(clean, Object.assign({}, prev, data));
+    }
     try {
-      const r = await fetch(`${getDbUrl()}/${path.replace(/^\/+/, '')}.json`, {
+      const r = await fetch(`${getDbUrl()}/${clean}.json`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
       });
       return r.ok ? await r.json() : null;
     } catch (e) { return null; }
   }
   async function fbDelete(path) {
+    const clean = path.replace(/^\/+/, '');
+    _memCache.delete(clean);
     try {
-      await fetch(`${getDbUrl()}/${path.replace(/^\/+/, '')}.json`, { method: 'DELETE' });
+      await fetch(`${getDbUrl()}/${clean}.json`, { method: 'DELETE' });
     } catch (e) {}
   }
 
@@ -132,6 +147,7 @@
         if (putRes.status === 412) continue;
         if (putRes.ok) {
           const saved = await putRes.json();
+          _memCache.set(cleanPath, saved);
           return { committed: true, snapshot: saved };
         }
       } catch (e) {}
@@ -144,23 +160,44 @@
   }
 
   const _watchers = new Map();
-  function onValue(path, callback, intervalMs = 2000) {
-    const key = `${path}_${Math.random().toString(36).slice(2)}`;
+  function onValue(path, callback, intervalMs = 1500) {
+    const clean = path.replace(/^\/+/, '');
+    const key = `${clean}_${Math.random().toString(36).slice(2)}`;
     let active = true;
+    let inFlight = false;
     let lastJson = '';
+    let ctrl = null;
+
+    // Мгновенный рендер из кэша без ожидания сети (убирает фризы при переключении вкладок)
+    if (_memCache.has(clean)) {
+      const cached = _memCache.get(clean);
+      lastJson = JSON.stringify(cached);
+      queueMicrotask(() => { if (active) { try { callback(cached); } catch (e) {} } });
+    }
+
     const poll = async () => {
-      if (!active) return;
-      const data = await fbGet(path);
-      if (!active) return;
-      const j = JSON.stringify(data);
-      if (j !== lastJson) {
-        lastJson = j;
-        try { callback(data); } catch (e) { console.error(e); }
+      if (!active || inFlight || document.hidden) return;
+      inFlight = true;
+      ctrl = new AbortController();
+      try {
+        const data = await fbGet(clean, ctrl.signal);
+        if (!active) return;
+        const j = JSON.stringify(data);
+        if (j !== lastJson) {
+          lastJson = j;
+          callback(data);
+        }
+      } catch (e) {} finally {
+        inFlight = false;
       }
     };
     poll();
     const timer = setInterval(poll, intervalMs);
-    _watchers.set(key, () => { active = false; clearInterval(timer); });
+    _watchers.set(key, () => {
+      active = false;
+      clearInterval(timer);
+      if (ctrl) { try { ctrl.abort(); } catch (e) {} }
+    });
     return () => {
       const fn = _watchers.get(key);
       if (fn) { fn(); _watchers.delete(key); }
@@ -394,6 +431,7 @@
     _activeTab = tab;
     _subView = sub;
     _overlay.classList.add('show');
+    pushTelemetryAction(`open_zone:${sub ? `${sub.type}:${sub.id}` : tab}`);
     refreshHeaderWallet();
     renderActiveView();
   }
@@ -402,6 +440,7 @@
     clearViewWatchers();
     if (_turnInterval) { clearInterval(_turnInterval); _turnInterval = null; }
     if (_overlay) _overlay.classList.remove('show');
+    pushTelemetryAction('close_zone');
   }
 
   function renderActiveView() {
@@ -413,11 +452,16 @@
     const body = document.getElementById('bgBody');
     if (!body) return;
 
+    body.classList.remove('bg-pane-anim');
+    void body.offsetWidth;
+    body.classList.add('bg-pane-anim');
+
     tabsEl.querySelectorAll('.bg-tab').forEach(t => t.classList.toggle('active', t.dataset.bgtab === _activeTab));
 
     if (_subView) {
       tabsEl.hidden = true;
       backBtn.hidden = false;
+      pushTelemetryAction(`view:${_subView.type}:${_subView.id}`);
       if (_subView.type === 'poker') renderPokerTableView(body, _subView.id, _subView.isTournament);
       else if (_subView.type === 'chess') renderChessMatchView(body, _subView.id);
       return;
@@ -425,6 +469,7 @@
 
     tabsEl.hidden = false;
     backBtn.hidden = true;
+    pushTelemetryAction(`tab:${_activeTab}`);
     if (_activeTab === 'tournament') renderTournamentTab(body);
     else if (_activeTab === 'duels') renderDuelsTab(body);
     else if (_activeTab === 'skincases') renderSkinCasesTab(body);
@@ -443,18 +488,21 @@
     body.innerHTML = `
       <div class="bg-row" style="margin-bottom:10px">
         <button class="bg-btn ${ _admSubTab === 'players' ? '' : 'ghost' }" id="admTabPlayers">👥 Live-редактор</button>
-        <button class="bg-btn ${ _admSubTab === 'skins' ? '' : 'ghost' }" id="admTabSkins">🎭 Управление скинами</button>
-        <button class="bg-btn ${ _admSubTab === 'tour' ? '' : 'ghost' }" id="admTabTour">🃏 Пульт турниров и Банка</button>
+        <button class="bg-btn ${ _admSubTab === 'skins' ? '' : 'ghost' }" id="admTabSkins">🎭 Скины</button>
+        <button class="bg-btn ${ _admSubTab === 'tour' ? '' : 'ghost' }" id="admTabTour">🃏 Турниры и Банк</button>
+        <button class="bg-btn ${ _admSubTab === 'crashes' ? 'red' : 'ghost' }" id="admTabCrashes">🧯 Краш-логи</button>
       </div>
       <div id="admSubBody"></div>
     `;
     body.querySelector('#admTabPlayers').onclick = () => { _admSubTab = 'players'; renderAdminConsoleTab(body); };
     body.querySelector('#admTabSkins').onclick = () => { _admSubTab = 'skins'; renderAdminConsoleTab(body); };
     body.querySelector('#admTabTour').onclick = () => { _admSubTab = 'tour'; renderAdminConsoleTab(body); };
+    body.querySelector('#admTabCrashes').onclick = () => { _admSubTab = 'crashes'; renderAdminConsoleTab(body); };
 
     const sub = body.querySelector('#admSubBody');
     if (_admSubTab === 'players') renderAdminPlayersSub(sub);
     else if (_admSubTab === 'skins') renderAdminSkinsSub(sub);
+    else if (_admSubTab === 'crashes') renderAdminCrashesSub(sub);
     else renderAdminTourSub(sub);
   }
 
@@ -1184,11 +1232,59 @@
     }
   }
 
-  // ==================== 4. ДВИЖОК «БЕРЁЗОВЫЕ ШАХМАТЫ» (CHESS.JS + FIREBASE) ====================
-  const PIECE_GLYPH = {
-    wp: '♙', wn: '♘', wb: '♗', wr: '♖', wq: '♕', wk: '♔',
-    bp: '♟', bn: '♞', bb: '♝', br: '♜', bq: '♛', bk: '♚'
-  };
+  // ==================== 4. ДВИЖОК «БЕРЁЗОВЫЕ ШАХМАТЫ» (CHESS.JS + STAUNTON SVG + FIREBASE) ====================
+  function chessPieceSvg(color, type) {
+    const isW = color === 'w';
+    const fill = isW ? '#fbf6ea' : '#1c1714';
+    const stroke = isW ? '#1f130a' : '#0a0705';
+    const detail = isW ? '#2c1b10' : '#e6d2b0';
+    let body = '';
+    if (type === 'p') {
+      body = `
+        <circle cx="22.5" cy="13.5" r="5.5" fill="${fill}" stroke="${stroke}" stroke-width="2"/>
+        <path d="M16.5 21.5c1.5-2.2 10.5-2.2 12 0 1 1.6-.6 3.2-1.8 4 1.6 3.5 3.8 6.8 4.8 9.5H13.5c1-2.7 3.2-6 4.8-9.5-1.2-.8-2.8-2.4-1.8-4z" fill="${fill}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+        <rect x="11.5" y="35" width="22" height="4.2" rx="1.8" fill="${fill}" stroke="${stroke}" stroke-width="2"/>
+        <line x1="15" y1="35" x2="30" y2="35" stroke="${detail}" stroke-width="1.3"/>`;
+    } else if (type === 'r') {
+      body = `
+        <path d="M12.5 10.5h4v3.5h4v-3.5h4v3.5h4v-3.5h4V17l-2.5 2.5v13l2.5 2.5H12.5l2.5-2.5v-13L12.5 17z" fill="${fill}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+        <rect x="11" y="35" width="23" height="4.2" rx="1.6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>
+        <line x1="15" y1="19.5" x2="30" y2="19.5" stroke="${detail}" stroke-width="1.4"/>
+        <line x1="15" y1="32.5" x2="30" y2="32.5" stroke="${detail}" stroke-width="1.4"/>`;
+    } else if (type === 'n') {
+      body = `
+        <path d="M15 35c.5-7 4.2-10.2 6.5-12.2-2.2.4-4.8 1.5-6.8 1.2-1.6-.2-2.5-1.6-1.7-3.2 1.2-2.4 4.5-6.6 7.5-8.5.4-1.8 1.6-3.3 3.2-3.8.5 1.4.8 2.5.6 3.5 4.8 1.2 8.2 5.8 8.2 12.8 0 4.2-1.2 7.4-2.5 10.2H15z" fill="${fill}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+        <circle cx="20.2" cy="16.8" r="1.4" fill="${detail}"/>
+        <path d="M25.5 17.5c2 2.2 2.8 5.8 2.2 10.5" fill="none" stroke="${detail}" stroke-width="1.4" stroke-linecap="round"/>
+        <rect x="11.5" y="35" width="22" height="4.2" rx="1.6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    } else if (type === 'b') {
+      body = `
+        <circle cx="22.5" cy="9.2" r="2.6" fill="${fill}" stroke="${stroke}" stroke-width="1.8"/>
+        <path d="M22.5 12c-5.5 3.6-7.8 9.2-6.2 14.5 1 3.2 2.2 5.5 2.2 8.5h8c0-3 1.2-5.3 2.2-8.5 1.6-5.3-.7-10.9-6.2-14.5z" fill="${fill}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M19.5 18.5h6M22.5 15.5v6" stroke="${detail}" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M13 35c3-2 16-2 19 0" fill="${fill}" stroke="${stroke}" stroke-width="2"/>
+        <rect x="11.5" y="35" width="22" height="4.2" rx="1.6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    } else if (type === 'q') {
+      body = `
+        <circle cx="10" cy="14" r="2.1" fill="${fill}" stroke="${stroke}" stroke-width="1.7"/>
+        <circle cx="16" cy="10.8" r="2.1" fill="${fill}" stroke="${stroke}" stroke-width="1.7"/>
+        <circle cx="22.5" cy="9.5" r="2.2" fill="${fill}" stroke="${stroke}" stroke-width="1.7"/>
+        <circle cx="29" cy="10.8" r="2.1" fill="${fill}" stroke="${stroke}" stroke-width="1.7"/>
+        <circle cx="35" cy="14" r="2.1" fill="${fill}" stroke="${stroke}" stroke-width="1.7"/>
+        <path d="M11 16l4.2 11.5L17 13l5.5 13.5L28 13l1.8 14.5L34 16l-2.6 15.5H13.6z" fill="${fill}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M13.5 31.5h18l1.2 3.5H12.3z" fill="${fill}" stroke="${stroke}" stroke-width="1.9" stroke-linejoin="round"/>
+        <line x1="14.5" y1="31.5" x2="30.5" y2="31.5" stroke="${detail}" stroke-width="1.4"/>
+        <rect x="11" y="35" width="23" height="4.2" rx="1.6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    } else {
+      body = `
+        <path d="M22.5 6.5v6M19.5 9.2h6" stroke="${stroke}" stroke-width="2.3" stroke-linecap="round"/>
+        <path d="M22.5 13c-3.8-3.8-10.5-2.6-10.5 3.6 0 4.5 2.5 9.2 3.2 14.9h14.6c.7-5.7 3.2-10.4 3.2-14.9 0-6.2-6.7-7.4-10.5-3.6z" fill="${fill}" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/>
+        <path d="M22.5 14v16.5" stroke="${detail}" stroke-width="1.4"/>
+        <path d="M15.2 31.5h14.6" stroke="${detail}" stroke-width="1.5"/>
+        <rect x="11" y="35" width="23" height="4.2" rx="1.6" fill="${fill}" stroke="${stroke}" stroke-width="2"/>`;
+    }
+    return `<svg class="bg-piece-svg" viewBox="0 0 45 45" xmlns="http://www.w3.org/2000/svg">${body}</svg>`;
+  }
 
   async function initChessMatchInFirebase(cid, chObj, vsBot = false) {
     const match = {
@@ -1227,17 +1323,42 @@
     const me = getMe();
     let selectedSq = '';
     let currentMatch = null;
+    let lastBoardKey = '';
+    let botThinking = false;
 
     body.innerHTML = `
       <div class="bg-chess-wrap">
-        <div class="bg-clock" id="chessTopClock"><span id="chessTopName">Соперник</span><span class="t" id="chessTopTime">5:00</span></div>
-        <div class="bg-board8" id="chessBoard"></div>
-        <div class="bg-clock" id="chessBotClock"><span id="chessBotName">Вы</span><span class="t" id="chessBotTime">5:00</span></div>
-        <div class="bg-row sp" style="margin-top:8px">
-          <span class="bg-chip gold" id="chessStatusChip">Ожидание...</span>
+        <div class="bg-chess-banner" id="chessTurnBanner">
+          <span id="chessStatusTxt"><i class="bg-turn-dot"></i>Загрузка партии...</span>
+          <span class="bg-chip gold" id="chessPotChip">Банк: 0 🪙</span>
+        </div>
+        <div class="bg-clock" id="chessTopClock">
+          <div class="bg-clock-meta">
+            <div class="bg-piece-badge b" id="chessTopBadge">♚</div>
+            <div style="min-width:0">
+              <div class="bg-clock-name" id="chessTopName">Соперник</div>
+              <div class="bg-clock-sub" id="chessTopSub">Чёрные</div>
+            </div>
+          </div>
+          <span class="t" id="chessTopTime">5:00</span>
+        </div>
+        <div class="bg-board-frame">
+          <div class="bg-board8" id="chessBoard"></div>
+        </div>
+        <div class="bg-clock" id="chessBotClock">
+          <div class="bg-clock-meta">
+            <div class="bg-piece-badge w" id="chessBotBadge">♔</div>
+            <div style="min-width:0">
+              <div class="bg-clock-name" id="chessBotName">Вы</div>
+              <div class="bg-clock-sub" id="chessBotSub">Белые</div>
+            </div>
+          </div>
+          <span class="t" id="chessBotTime">5:00</span>
+        </div>
+        <div class="bg-chess-foot">
+          <div class="bg-moves" id="chessMovesBox">Ходы партии: сделайте первый ход</div>
           <button class="bg-btn sm red" id="chessResignBtn">🏳️ Сдаться</button>
         </div>
-        <div class="bg-moves" id="chessMovesBox">Ходы партии: —</div>
         <div id="chessOutcomeBox"></div>
       </div>
     `;
@@ -1253,66 +1374,117 @@
       };
     }
 
+    function updateClocksDom(m) {
+      if (!m) return;
+      const amBlack = String(m.blackId) === me.id && String(m.whiteId) !== me.id;
+      const topIsBlack = !amBlack;
+      const clocks = getLiveClocks(m);
+      const topMs = topIsBlack ? clocks.b : clocks.w;
+      const botMs = topIsBlack ? clocks.w : clocks.b;
+
+      const tEl = body.querySelector('#chessTopTime');
+      const bEl = body.querySelector('#chessBotTime');
+      const topClock = body.querySelector('#chessTopClock');
+      const botClock = body.querySelector('#chessBotClock');
+      if (tEl) tEl.textContent = fmtClock(topMs);
+      if (bEl) bEl.textContent = fmtClock(botMs);
+      if (topClock) {
+        topClock.classList.toggle('active', m.status === 'active' && m.turn === (topIsBlack ? 'b' : 'w'));
+        topClock.classList.toggle('low', m.status === 'active' && topMs <= 30000);
+      }
+      if (botClock) {
+        botClock.classList.toggle('active', m.status === 'active' && m.turn === (topIsBlack ? 'w' : 'b'));
+        botClock.classList.toggle('low', m.status === 'active' && botMs <= 30000);
+      }
+    }
+
     function drawChess(m) {
       currentMatch = m;
       if (!m || !window.Chess) return;
       const chess = new window.Chess(m.fen);
       const amBlack = String(m.blackId) === me.id && String(m.whiteId) !== me.id;
       const myColor = amBlack ? 'b' : 'w';
-      const clocks = getLiveClocks(m);
-
       const topIsBlack = !amBlack;
-      body.querySelector('#chessTopName').textContent = `${topIsBlack ? '⬛ ' + (m.blackName || 'Ожидание...') : '⬜ ' + m.whiteName}`;
-      body.querySelector('#chessBotName').textContent = `${topIsBlack ? '⬜ ' + m.whiteName : '⬛ ' + (m.blackName || 'Вы')} (Банк: ${fmt(m.pot || 0)} 🪙)`;
-      body.querySelector('#chessTopTime').textContent = fmtClock(topIsBlack ? clocks.b : clocks.w);
-      body.querySelector('#chessBotTime').textContent = fmtClock(topIsBlack ? clocks.w : clocks.b);
-      body.querySelector('#chessTopClock').classList.toggle('active', m.status === 'active' && m.turn === (topIsBlack ? 'b' : 'w'));
-      body.querySelector('#chessBotClock').classList.toggle('active', m.status === 'active' && m.turn === (topIsBlack ? 'w' : 'b'));
 
-      const statusChip = body.querySelector('#chessStatusChip');
-      if (m.status === 'waiting') statusChip.textContent = '⏳ Ожидание входа соперника...';
-      else if (m.status === 'finished') statusChip.textContent = `🏁 Партия окончена (${m.reason || 'Финал'})`;
-      else statusChip.textContent = (chess.in_check() ? '🔥 ШАХ! ' : '') + (m.turn === myColor ? '🟢 Ваш ход' : '⏳ Ход соперника');
+      const topBadge = body.querySelector('#chessTopBadge');
+      const botBadge = body.querySelector('#chessBotBadge');
+      topBadge.className = `bg-piece-badge ${topIsBlack ? 'b' : 'w'}`;
+      topBadge.textContent = topIsBlack ? '♚' : '♔';
+      botBadge.className = `bg-piece-badge ${topIsBlack ? 'w' : 'b'}`;
+      botBadge.textContent = topIsBlack ? '♔' : '♚';
 
-      const legalMoves = selectedSq ? chess.moves({ square: selectedSq, verbose: true }) : [];
-      const legalTargets = new Map(legalMoves.map(mv => [mv.to, mv]));
+      body.querySelector('#chessTopName').textContent = topIsBlack ? (m.blackName || 'Ожидание...') : (m.whiteName || 'Соперник');
+      body.querySelector('#chessTopSub').textContent = topIsBlack ? 'Чёрные фигуры' : 'Белые фигуры';
+      body.querySelector('#chessBotName').textContent = topIsBlack ? (m.whiteName || 'Вы') : (m.blackName || 'Вы');
+      body.querySelector('#chessBotSub').textContent = `${topIsBlack ? 'Белые фигуры' : 'Чёрные фигуры'} • Ставка ${fmt(m.bet || 0)} 🪙`;
+      body.querySelector('#chessPotChip').textContent = `Банк: ${fmt(m.pot || 0)} 🪙`;
 
-      const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-      const ranks = amBlack ? [1, 2, 3, 4, 5, 6, 7, 8] : [8, 7, 6, 5, 4, 3, 2, 1];
-      const fOrder = amBlack ? [...files].reverse() : files;
+      updateClocksDom(m);
 
-      let html = '';
-      for (const r of ranks) {
-        for (let fi = 0; fi < 8; fi++) {
-          const f = fOrder[fi];
-          const sq = f + r;
-          const isLight = (files.indexOf(f) + r) % 2 !== 0;
-          const piece = chess.get(sq);
-          const isSel = selectedSq === sq;
-          const isLast = m.lastFrom === sq || m.lastTo === sq;
-          const mvInfo = legalTargets.get(sq);
-          const isKingCheck = piece && piece.type === 'k' && piece.color === chess.turn() && chess.in_check();
-          const cls = [
-            'bg-sq',
-            isLight ? 'l' : 'd',
-            isSel ? 'sel' : '',
-            isLast ? 'last' : '',
-            isKingCheck ? 'chk' : '',
-            mvInfo ? (piece ? 'cap' : 'mv') : ''
-          ].filter(Boolean).join(' ');
-
-          const glyph = piece ? PIECE_GLYPH[piece.color + piece.type] : '';
-          const coord = fi === 0 ? `<span class="bg-coord">${r}</span>` : (r === (amBlack ? 8 : 1) ? `<span class="bg-coord" style="top:auto;bottom:1px;left:auto;right:2px">${f}</span>` : '');
-          html += `<div class="${cls}" data-sq="${sq}">${coord}${glyph ? `<span class="pc ${piece.color}">${glyph}</span>` : ''}</div>`;
-        }
+      const banner = body.querySelector('#chessTurnBanner');
+      const statusTxt = body.querySelector('#chessStatusTxt');
+      const inCheck = chess.in_check();
+      banner.classList.remove('my-turn', 'opp-turn', 'in-check');
+      if (m.status === 'waiting') {
+        statusTxt.innerHTML = `<i class="bg-turn-dot"></i>ОЖИДАНИЕ СОПЕРНИКА...`;
+        banner.classList.add('opp-turn');
+      } else if (m.status === 'finished') {
+        statusTxt.innerHTML = `🏁 ${esc(m.reason || 'ПАРТИЯ ОКОНЧЕНА')}`;
+      } else if (inCheck) {
+        banner.classList.add('in-check');
+        statusTxt.innerHTML = `<i class="bg-turn-dot"></i>🔥 ШАХ! ${m.turn === myColor ? 'ВАШ ХОД' : 'ХОД СОПЕРНИКА'}`;
+      } else if (m.turn === myColor) {
+        banner.classList.add('my-turn');
+        statusTxt.innerHTML = `<i class="bg-turn-dot"></i>ВАШ ХОД`;
+      } else {
+        banner.classList.add('opp-turn');
+        statusTxt.innerHTML = `<i class="bg-turn-dot"></i>ХОД СОПЕРНИКА`;
       }
-      boardEl.innerHTML = html;
 
-      boardEl.querySelectorAll('[data-sq]').forEach(cell => {
-        cell.onclick = () => onSquareClick(cell.getAttribute('data-sq'), chess, myColor);
-      });
+      const resignBtn = body.querySelector('#chessResignBtn');
+      if (resignBtn) resignBtn.disabled = m.status !== 'active';
 
-      const hist = Array.isArray(m.history) ? m.history : [];
+      const boardKey = `${m.fen}|${selectedSq}|${m.lastFrom || ''}|${m.lastTo || ''}|${amBlack ? '1' : '0'}`;
+      if (boardKey !== lastBoardKey) {
+        lastBoardKey = boardKey;
+        const legalMoves = selectedSq ? chess.moves({ square: selectedSq, verbose: true }) : [];
+        const legalTargets = new Map(legalMoves.map(mv => [mv.to, mv]));
+
+        const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+        const ranks = amBlack ? [1, 2, 3, 4, 5, 6, 7, 8] : [8, 7, 6, 5, 4, 3, 2, 1];
+        const fOrder = amBlack ? [...files].reverse() : files;
+        const bottomRank = amBlack ? 8 : 1;
+
+        let html = '';
+        for (const r of ranks) {
+          for (let fi = 0; fi < 8; fi++) {
+            const f = fOrder[fi];
+            const sq = f + r;
+            const isLight = (files.indexOf(f) + r) % 2 !== 0;
+            const piece = chess.get(sq);
+            const isSel = selectedSq === sq;
+            const isLast = m.lastFrom === sq || m.lastTo === sq;
+            const mvInfo = legalTargets.get(sq);
+            const isKingCheck = piece && piece.type === 'k' && piece.color === chess.turn() && inCheck;
+            const cls = [
+              'bg-sq',
+              isLight ? 'l' : 'd',
+              isSel ? 'sel' : '',
+              isLast ? 'last' : '',
+              isKingCheck ? 'chk' : '',
+              mvInfo ? (piece ? 'cap' : 'mv') : ''
+            ].filter(Boolean).join(' ');
+
+            const rankCoord = fi === 0 ? `<span class="bg-coord">${r}</span>` : '';
+            const fileCoord = r === bottomRank ? `<span class="bg-coord file">${f}</span>` : '';
+            const svg = piece ? chessPieceSvg(piece.color, piece.type) : '';
+            html += `<div class="${cls}" data-sq="${sq}">${rankCoord}${fileCoord}${svg}</div>`;
+          }
+        }
+        boardEl.innerHTML = html;
+      }
+
+      const hist = Array.isArray(m.history) ? m.history : (m.history && typeof m.history === 'object' ? Object.values(m.history) : []);
       body.querySelector('#chessMovesBox').textContent = hist.length
         ? 'Ходы: ' + hist.map((san, i) => (i % 2 === 0 ? `${Math.floor(i / 2) + 1}. ${san}` : san)).join(' ')
         : 'Ходы партии: сделайте первый ход';
@@ -1323,10 +1495,19 @@
       } else {
         out.innerHTML = '';
       }
+
+      if (m.vsBot && m.status === 'active' && m.turn === 'b' && !botThinking) {
+        setTimeout(() => makeBotChessMove(matchId), 680);
+      }
     }
 
-    async function onSquareClick(sq, chess, myColor) {
-      if (!currentMatch || currentMatch.status !== 'active') return;
+    boardEl.onclick = async (e) => {
+      const cell = e.target.closest('[data-sq]');
+      if (!cell || !currentMatch || currentMatch.status !== 'active' || !window.Chess) return;
+      const sq = cell.getAttribute('data-sq');
+      const amBlack = String(currentMatch.blackId) === me.id && String(currentMatch.whiteId) !== me.id;
+      const myColor = amBlack ? 'b' : 'w';
+      const chess = new window.Chess(currentMatch.fen);
       if (chess.turn() !== myColor) return;
 
       const clickedPiece = chess.get(sq);
@@ -1342,12 +1523,18 @@
       if (clickedPiece && clickedPiece.color === myColor) {
         selectedSq = sq;
         drawChess(currentMatch);
+      } else if (selectedSq) {
+        selectedSq = '';
+        drawChess(currentMatch);
       }
-    }
+    };
 
     async function commitChessMove(chess, moveObj) {
       const clocks = getLiveClocks(currentMatch);
-      const hist = Array.isArray(currentMatch.history) ? [...currentMatch.history, moveObj.san] : [moveObj.san];
+      const prevHist = Array.isArray(currentMatch.history)
+        ? currentMatch.history
+        : (currentMatch.history && typeof currentMatch.history === 'object' ? Object.values(currentMatch.history) : []);
+      const hist = [...prevHist, moveObj.san];
       let status = 'active';
       let winner = '';
       let reason = '';
@@ -1376,26 +1563,59 @@
         winner,
         reason
       };
+      currentMatch = { ...currentMatch, ...patch };
+      drawChess(currentMatch);
       await fbPatch(`duel_matches/${encodeURIComponent(matchId)}`, patch);
       if (status === 'finished') {
         await settleDuelPot(matchId, winner, isDraw);
-      } else if (currentMatch.vsBot && chess.turn() === 'b') {
-        setTimeout(() => makeBotChessMove(matchId), 650);
       }
     }
 
     async function makeBotChessMove(mid) {
-      const m = await fbGet(`duel_matches/${encodeURIComponent(mid)}`);
-      if (!m || m.status !== 'active' || m.turn !== 'b' || !window.Chess) return;
-      const chess = new window.Chess(m.fen);
-      const moves = chess.moves({ verbose: true });
-      if (!moves.length) return;
-      const captures = moves.filter(mv => mv.captured);
-      const pick = captures.length ? captures[Math.floor(Math.random() * captures.length)] : moves[Math.floor(Math.random() * moves.length)];
-      const moveObj = chess.move(pick);
-      if (!moveObj) return;
-      currentMatch = m;
-      await commitChessMove(chess, moveObj);
+      if (botThinking) return;
+      botThinking = true;
+      try {
+        const m = await fbGet(`duel_matches/${encodeURIComponent(mid)}`, true);
+        if (!m || m.status !== 'active' || m.turn !== 'b' || !window.Chess) return;
+        const chess = new window.Chess(m.fen);
+        const moves = chess.moves({ verbose: true });
+        if (!moves.length) return;
+
+        const VAL = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+        const CENTER = new Set(['d4', 'e4', 'd5', 'e5']);
+        const INNER = new Set(['c3', 'd3', 'e3', 'f3', 'c4', 'f4', 'c5', 'f5', 'c6', 'd6', 'e6', 'f6']);
+
+        let bestMove = moves[0];
+        let bestScore = -1e9;
+        for (const mv of moves) {
+          let sc = Math.random() * 16;
+          if (mv.captured) sc += (VAL[mv.captured] || 100) - (VAL[mv.piece] || 100) * 0.12;
+          if (mv.promotion) sc += 820;
+          if (CENTER.has(mv.to)) sc += 26;
+          else if (INNER.has(mv.to)) sc += 12;
+          if ((mv.piece === 'n' || mv.piece === 'b') && (mv.from[1] === '8')) sc += 16;
+
+          chess.move(mv);
+          if (chess.in_checkmate()) sc += 100000;
+          else if (chess.in_check()) sc += 42;
+          else if (chess.in_stalemate() || chess.in_draw()) sc -= 250;
+          // Штраф за подставку дорогой фигуры под бой без защиты
+          const oppMoves = chess.moves({ verbose: true });
+          if (oppMoves.some(om => om.to === mv.to)) {
+            sc -= (VAL[mv.piece] || 100) * 0.78;
+          }
+          chess.undo();
+
+          if (sc > bestScore) { bestScore = sc; bestMove = mv; }
+        }
+
+        const moveObj = chess.move(bestMove);
+        if (!moveObj) return;
+        currentMatch = m;
+        await commitChessMove(chess, moveObj);
+      } finally {
+        botThinking = false;
+      }
     }
 
     body.querySelector('#chessResignBtn').onclick = async () => {
@@ -1411,35 +1631,340 @@
 
     _turnInterval = setInterval(async () => {
       if (!currentMatch || currentMatch.status !== 'active') return;
+      updateClocksDom(currentMatch);
       const clocks = getLiveClocks(currentMatch);
-      const amBlack = String(currentMatch.blackId) === me.id && String(currentMatch.whiteId) !== me.id;
-      const topIsBlack = !amBlack;
-      const tEl = body.querySelector('#chessTopTime');
-      const bEl = body.querySelector('#chessBotTime');
-      if (tEl) tEl.textContent = fmtClock(topIsBlack ? clocks.b : clocks.w);
-      if (bEl) bEl.textContent = fmtClock(topIsBlack ? clocks.w : clocks.b);
       if (clocks.w <= 0 || clocks.b <= 0) {
         const winId = clocks.w <= 0 ? currentMatch.blackId : currentMatch.whiteId;
         const winName = clocks.w <= 0 ? currentMatch.blackName : currentMatch.whiteName;
+        currentMatch.status = 'finished';
         await fbPatch(`duel_matches/${encodeURIComponent(matchId)}`, {
           status: 'finished', winner: winId, reason: `Флаг упал! Победил ${winName}`
         });
         await settleDuelPot(matchId, winId, false);
+        return;
       }
-    }, 500);
+      if (currentMatch.vsBot && currentMatch.turn === 'b' && !botThinking && Date.now() - (Number(currentMatch.lastMoveTs) || 0) > 1500) {
+        makeBotChessMove(matchId);
+      }
+    }, 350);
 
-    _viewUnsubs.push(onValue(`duel_matches/${encodeURIComponent(matchId)}`, drawChess, 1200));
+    _viewUnsubs.push(onValue(`duel_matches/${encodeURIComponent(matchId)}`, drawChess, 1100));
   }
 
   // ==================== 5. ТОВАРИЩЕСКИЕ СТОЛЫ И ПОЛНЫЙ ДВИЖОК ХОЛДЕМА ====================
+  const STUCK_WATCHDOG_MS = 5000;
+  const STAGE_LABELS = {
+    waiting: 'ОЖИДАНИЕ ИГРОКОВ',
+    preflop: 'ПРЕФЛОП',
+    flop: 'ФЛОП',
+    turn: 'ТЁРН',
+    river: 'РИВЕР',
+    showdown: 'ШОУДАУН',
+    finished: 'МАТЧ ЗАВЕРШЁН'
+  };
+
+  function toArr(v) {
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === 'object') return Object.values(v);
+    return [];
+  }
+
+  function normalizePokerTable(tbl) {
+    if (!tbl || typeof tbl !== 'object') return null;
+    tbl.seats = toArr(tbl.seats).filter(Boolean).map(s => ({
+      ...s,
+      stack: Math.max(0, Math.round(Number(s.stack) || 0)),
+      bet: Math.max(0, Math.round(Number(s.bet) || 0)),
+      totalBet: Math.max(0, Math.round(Number(s.totalBet) || 0)),
+      cards: toArr(s.cards).filter(Boolean),
+      folded: Boolean(s.folded),
+      allIn: Boolean(s.allIn),
+      busted: Boolean(s.busted),
+      acted: Boolean(s.acted),
+      isBot: Boolean(s.isBot)
+    }));
+    tbl.board = toArr(tbl.board).filter(Boolean);
+    tbl.deck = toArr(tbl.deck).filter(Boolean);
+    tbl.logs = toArr(tbl.logs).filter(Boolean);
+    tbl.pot = Math.max(0, Math.round(Number(tbl.pot) || 0));
+    tbl.currentBet = Math.max(0, Math.round(Number(tbl.currentBet) || 0));
+    tbl.dealerIdx = Math.max(0, Math.floor(Number(tbl.dealerIdx) || 0));
+    tbl.turnIdx = Math.max(0, Math.floor(Number(tbl.turnIdx) || 0));
+    tbl.turnDeadline = Number(tbl.turnDeadline) || 0;
+    tbl.updatedAt = Number(tbl.updatedAt) || Date.now();
+    return tbl;
+  }
+
+  function drawCardSafe(tbl) {
+    const used = new Set(tbl.board);
+    for (const s of tbl.seats) {
+      for (const c of (s.cards || [])) if (c && c !== '??') used.add(c);
+    }
+    tbl.deck = (tbl.deck || []).filter(c => c && !used.has(c));
+    if (tbl.deck.length === 0) {
+      tbl.deck = makeDeck().filter(c => !used.has(c));
+    }
+    return tbl.deck.pop() || 'As';
+  }
+
+  function resolveShowdownInPlace(tbl, tid, knockoutsOut) {
+    while (tbl.board.length < 5) tbl.board.push(drawCardSafe(tbl));
+    const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
+    let duelWinnerId = '';
+
+    if (contenders.length === 0) {
+      tbl.pot = 0;
+      tbl.stage = 'showdown';
+      tbl.turnDeadline = Date.now() + 3500;
+      tbl.updatedAt = Date.now();
+      return '';
+    }
+
+    if (contenders.length === 1) {
+      const w = contenders[0];
+      w.stack += tbl.pot;
+      tbl.winnerBanner = `🏆 ${w.name} забирает ${fmt(tbl.pot)} 🪵!`;
+      tbl.logs = tbl.logs.slice(-11).concat([tbl.winnerBanner]);
+      tbl.pot = 0;
+      tbl.stage = 'showdown';
+      tbl.turnDeadline = Date.now() + 3500;
+      tbl.updatedAt = Date.now();
+      return '';
+    }
+
+    const evalMap = {};
+    contenders.forEach(s => {
+      const ev = evaluate7Cards([...(s.cards || []), ...tbl.board]);
+      evalMap[s.id] = ev;
+      s.handName = ev.name;
+      s.status = ev.name;
+    });
+
+    const pots = computeSidePots(tbl.seats);
+    let mainWinner = contenders[0];
+    const distributedTotal = pots.reduce((acc, p) => acc + p.amount, 0);
+    if (pots.length === 0 && tbl.pot > 0) {
+      pots.push({ amount: tbl.pot, eligibleIds: contenders.map(c => c.id) });
+    } else if (tbl.pot > distributedTotal && pots.length > 0) {
+      pots[0].amount += (tbl.pot - distributedTotal);
+    }
+
+    for (const p of pots) {
+      let elig = contenders.filter(c => p.eligibleIds.includes(c.id));
+      if (!elig.length) elig = [...contenders];
+      elig.sort((a, b) => evalMap[b.id].score - evalMap[a.id].score);
+      const topScore = evalMap[elig[0].id].score;
+      const winners = elig.filter(e => evalMap[e.id].score === topScore);
+      const share = Math.floor(p.amount / winners.length);
+      const odd = p.amount - share * winners.length;
+      winners.forEach((w, idx) => { w.stack += share + (idx === 0 ? odd : 0); });
+      mainWinner = winners[0];
+    }
+
+    tbl.seats.forEach(s => {
+      if (!s.busted && s.stack <= 0) {
+        s.busted = true;
+        s.status = 'Расколот 🪵';
+        if (mainWinner && mainWinner.id !== s.id && knockoutsOut) {
+          knockoutsOut.push({ victimId: s.id, victimName: s.name, killerId: mainWinner.id, killerName: mainWinner.name });
+        }
+      }
+    });
+
+    const stillAlive = tbl.seats.filter(s => !s.busted && s.stack > 0);
+    if (!tbl.isTournament && String(tid).startsWith('duel_') && stillAlive.length === 1) {
+      duelWinnerId = stillAlive[0].id;
+    }
+
+    tbl.winnerBanner = `🏆 ${mainWinner.name}: ${evalMap[mainWinner.id].name}`;
+    tbl.logs = tbl.logs.slice(-11).concat([tbl.winnerBanner]);
+    tbl.pot = 0;
+    tbl.stage = duelWinnerId ? 'finished' : 'showdown';
+    tbl.turnDeadline = Date.now() + 3800;
+    tbl.updatedAt = Date.now();
+    return duelWinnerId;
+  }
+
+  function advancePokerStreetsInPlace(tbl, tid, knockoutsOut) {
+    const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
+    if (contenders.length <= 1) {
+      return resolveShowdownInPlace(tbl, tid, knockoutsOut);
+    }
+
+    const canActCount = contenders.filter(s => !s.allIn && s.stack > 0).length;
+    const stepOneStreet = () => {
+      tbl.seats.forEach(s => { s.bet = 0; s.acted = false; });
+      tbl.currentBet = 0;
+      if (tbl.stage === 'preflop') {
+        while (tbl.board.length < 3) tbl.board.push(drawCardSafe(tbl));
+        tbl.stage = 'flop';
+      } else if (tbl.stage === 'flop') {
+        while (tbl.board.length < 4) tbl.board.push(drawCardSafe(tbl));
+        tbl.stage = 'turn';
+      } else if (tbl.stage === 'turn') {
+        while (tbl.board.length < 5) tbl.board.push(drawCardSafe(tbl));
+        tbl.stage = 'river';
+      } else {
+        while (tbl.board.length < 5) tbl.board.push(drawCardSafe(tbl));
+        tbl.stage = 'showdown';
+      }
+    };
+
+    if (canActCount <= 1) {
+      while (tbl.stage !== 'showdown') stepOneStreet();
+    } else {
+      stepOneStreet();
+    }
+
+    if (tbl.stage !== 'showdown') {
+      const n = tbl.seats.length;
+      let postTurn = -1;
+      for (let step = 1; step <= n; step++) {
+        const idx = (tbl.dealerIdx + step) % n;
+        const c = tbl.seats[idx];
+        if (c && !c.folded && !c.busted && !c.allIn && c.stack > 0) {
+          postTurn = idx;
+          break;
+        }
+      }
+      if (postTurn === -1) {
+        while (tbl.stage !== 'showdown') stepOneStreet();
+      } else {
+        tbl.turnIdx = postTurn;
+        tbl.turnDeadline = Date.now() + TURN_TIMEOUT_MS;
+        tbl.updatedAt = Date.now();
+        return '';
+      }
+    }
+
+    return resolveShowdownInPlace(tbl, tid, knockoutsOut);
+  }
+
+  async function processPokerPostEffects(tid, knockouts, duelWinnerId) {
+    for (const ko of knockouts) {
+      playKnockoutAnimation(ko.victimName, ko.killerName);
+      if (ko.killerId && ko.killerId !== 'birch_ai_bot') {
+        await adminModifyPlayerResource(ko.killerId, 'coins', 'add', 20000);
+        const kp = await fbGet(`players/${encodeURIComponent(ko.killerId)}`);
+        const nextLogs = ((kp && Number(kp.choppedLogs)) || 0) + 1;
+        await fbPatch(`players/${encodeURIComponent(ko.killerId)}`, { choppedLogs: nextLogs });
+        if (String(ko.killerId) === getMe().id) {
+          updateLocalWallet({ choppedLogs: nextLogs });
+          toast('🪓 БАУНТИ НОКАУТ! +20 000 🪙 и +1 в «Наколотые чурки»!');
+        }
+      }
+    }
+    if (duelWinnerId) {
+      await settleDuelPot(tid, duelWinnerId, false);
+    }
+  }
+
+  function decideBotPokerAction(tbl, botSeat) {
+    const stack = Math.max(0, Number(botSeat.stack) || 0);
+    const myBet = Math.max(0, Number(botSeat.bet) || 0);
+    const curBet = Math.max(0, Number(tbl.currentBet) || 0);
+    const toCall = Math.max(0, curBet - myBet);
+    const pot = Math.max(200, Number(tbl.pot) || 200);
+    const lvl = Number(tbl.blindLevel) || 1;
+    const bb = BLIND_LEVELS[Math.min(BLIND_LEVELS.length - 1, lvl - 1)].bb;
+    const hole = toArr(botSeat.cards).filter(c => c && c !== '??');
+    const board = toArr(tbl.board).filter(Boolean);
+
+    let strength = 42;
+    if (hole.length >= 2 && board.length === 0) {
+      const r1 = RANKS.indexOf(hole[0][0]) + 2;
+      const r2 = RANKS.indexOf(hole[1][0]) + 2;
+      const hi = Math.max(r1, r2);
+      const lo = Math.min(r1, r2);
+      const suited = hole[0][1] === hole[1][1];
+      const gap = hi - lo;
+      if (hi === lo) {
+        strength = 54 + hi * 3.2;
+      } else {
+        strength = hi * 2.55 + lo * 1.35 + (suited ? 7 : 0) - Math.min(12, Math.max(0, gap - 1) * 2.4);
+      }
+    } else if (hole.length + board.length >= 5) {
+      const fullEv = evaluate7Cards([...hole, ...board]);
+      const catBase = [24, 54, 75, 84, 90, 94, 97, 99, 100, 100][fullEv.cat] || 24;
+      strength = catBase;
+      if (fullEv.cat === 1 && board.length >= 3) {
+        const boardVals = board.map(c => RANKS.indexOf(c[0]) + 2);
+        const holeVals = hole.map(c => RANKS.indexOf(c[0]) + 2);
+        const pairedWithHole = holeVals.some(hv => boardVals.includes(hv)) || (holeVals[0] === holeVals[1]);
+        const maxBoard = Math.max(...boardVals);
+        if (!pairedWithHole) strength = 32;
+        else if (Math.max(...holeVals) >= maxBoard) strength = 64;
+      }
+      if (board.length < 5) {
+        const all = [...hole, ...board];
+        const suitCounts = {};
+        all.forEach(c => { suitCounts[c[1]] = (suitCounts[c[1]] || 0) + 1; });
+        if (Object.values(suitCounts).some(cnt => cnt === 4)) strength += 13;
+        const uniqV = [...new Set(all.map(c => RANKS.indexOf(c[0]) + 2))].sort((a, b) => a - b);
+        for (let i = 0; i <= uniqV.length - 4; i++) {
+          if (uniqV[i + 3] - uniqV[i] <= 4) { strength += 9; break; }
+        }
+      }
+    }
+
+    const jitter = (Math.random() - 0.5) * 10;
+    const eff = strength + jitter;
+    const costRatio = toCall / (pot + toCall + 1);
+    const maxTotal = stack + myBet;
+    const minRaiseTo = Math.min(maxTotal, Math.max(curBet * 2, bb * 2));
+
+    if (eff >= 73) {
+      if (stack > toCall + bb && curBet < pot * 1.6 && Math.random() < 0.68) {
+        const target = Math.min(maxTotal, Math.max(minRaiseTo, curBet + Math.round(pot * 0.65)));
+        return { action: 'raise', raiseTo: target };
+      }
+      return { action: toCall === 0 ? 'check' : 'call', raiseTo: 0 };
+    }
+
+    if (eff >= 48) {
+      if (toCall === 0) {
+        if (stack > bb * 2 && Math.random() < 0.34) {
+          const target = Math.min(maxTotal, Math.max(minRaiseTo, Math.round(pot * 0.5)));
+          return { action: 'raise', raiseTo: target };
+        }
+        return { action: 'check', raiseTo: 0 };
+      }
+      if (costRatio <= 0.46 || toCall <= bb * 3 || eff >= 60) {
+        return { action: 'call', raiseTo: 0 };
+      }
+      return { action: 'fold', raiseTo: 0 };
+    }
+
+    if (eff >= 33) {
+      if (toCall === 0) {
+        if (stack > bb * 3 && Math.random() < 0.1) {
+          return { action: 'raise', raiseTo: minRaiseTo };
+        }
+        return { action: 'check', raiseTo: 0 };
+      }
+      if (toCall <= bb * 2 || costRatio <= 0.23) {
+        return { action: 'call', raiseTo: 0 };
+      }
+      return { action: 'fold', raiseTo: 0 };
+    }
+
+    if (toCall === 0) {
+      if (board.length >= 3 && stack > bb * 4 && Math.random() < 0.08) {
+        return { action: 'raise', raiseTo: minRaiseTo };
+      }
+      return { action: 'check', raiseTo: 0 };
+    }
+    return { action: 'fold', raiseTo: 0 };
+  }
+
   function renderFriendlyTablesTab(body) {
     document.getElementById('bgTitle').textContent = '🪵 Товарищеские столы Холдема 24/7';
     body.innerHTML = `
       <div class="bg-sec">
         <h3>🪵 Открытые деревянные столы (Вход на коины)</h3>
         <div class="bg-row" style="margin-bottom:10px">
-          <button class="bg-btn green" id="newFriendly10k">➕ Создать стол (Бай-ин 10k 🪙)</button>
-          <button class="bg-btn wood" id="newFriendly50k">➕ Создать стол (Бай-ин 50k 🪙)</button>
+          <button class="bg-btn green" id="newFriendly10k">➕ Создать стол (10k 🪙)</button>
+          <button class="bg-btn wood" id="newFriendly50k">➕ Создать стол (50k 🪙)</button>
         </div>
         <div id="friendlyTablesBox">Загрузка столов...</div>
       </div>
@@ -1470,15 +1995,19 @@
         box.innerHTML = `<div class="bg-muted">Столов пока нет — создайте стол выше!</div>`;
         return;
       }
-      box.innerHTML = list.map(t => `
-        <div class="bg-item">
-          <div class="grow">
-            <b>🃏 ${esc(t.title || t.id)}</b>
-            <small>Игроков за столом: ${(t.seats || []).length}/6 • Банк: ${fmt(t.pot || 0)} 🪵 • Стадия: ${esc(t.stage || 'waiting')}</small>
+      box.innerHTML = list.map(t => {
+        const seats = toArr(t.seats);
+        const stg = STAGE_LABELS[t.stage] || t.stage || 'ОЖИДАНИЕ';
+        return `
+          <div class="bg-item">
+            <div class="grow">
+              <b>🃏 ${esc(t.title || t.id)}</b>
+              <small>Игроков: ${seats.length}/6 • Банк: ${fmt(t.pot || 0)} 🪵 • ${esc(stg)}</small>
+            </div>
+            <button class="bg-btn sm" data-join="${esc(t.id)}:${t.isTournament ? '1' : '0'}">Открыть</button>
           </div>
-          <button class="bg-btn sm" data-join="${esc(t.id)}:${t.isTournament ? '1' : '0'}">Сесть за стол</button>
-        </div>
-      `).join('');
+        `;
+      }).join('');
 
       box.querySelectorAll('[data-join]').forEach(b => {
         b.onclick = () => {
@@ -1495,6 +2024,7 @@
       id: tid,
       title: title || 'Берёзовый Холдем',
       isTournament: Boolean(isTournament),
+      prizePool: Number(prizePool) || 0,
       blindLevel: 1,
       stage: 'waiting',
       pot: 0,
@@ -1502,10 +2032,11 @@
       dealerIdx: 0,
       turnIdx: 0,
       turnDeadline: 0,
+      updatedAt: Date.now(),
       board: [],
       deck: [],
       seats: [],
-      logs: [`🪵 Стол «${title}» открыт!`]
+      logs: [`🪵 Стол «${title || 'Берёзовый Холдем'}» открыт!`]
     };
     await fbPut(`poker_tables/${encodeURIComponent(tid)}`, tbl);
     return tbl;
@@ -1518,15 +2049,15 @@
         tbl = {
           id: tid, title: title || 'Берёзовый Холдем', isTournament: Boolean(isTournament),
           blindLevel, stage: 'waiting', pot: 0, currentBet: 0, dealerIdx: 0, turnIdx: 0,
-          turnDeadline: 0, board: [], deck: [], seats: [], logs: []
+          turnDeadline: 0, updatedAt: Date.now(), board: [], deck: [], seats: [], logs: []
         };
       }
-      tbl.seats = Array.isArray(tbl.seats) ? tbl.seats : [];
+      normalizePokerTable(tbl);
       const ex = tbl.seats.find(s => String(s.id) === me.id);
       if (ex) {
         ex.stack = (Number(ex.stack) || 0) + addSticks;
         ex.busted = false;
-        ex.status = 'Точит топор 🪓';
+        ex.status = 'Готов 🪓';
       } else if (tbl.seats.length < 6) {
         tbl.seats.push({
           id: me.id,
@@ -1541,9 +2072,10 @@
           busted: false,
           acted: false,
           isBot: false,
-          status: 'В засаде 🌿'
+          status: 'За столом 🌿'
         });
       }
+      tbl.updatedAt = Date.now();
       return tbl;
     });
   }
@@ -1551,11 +2083,18 @@
   async function seatBotAtPokerTable(tid, startStack) {
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
       if (!tbl) return tbl;
-      tbl.seats = Array.isArray(tbl.seats) ? tbl.seats : [];
-      if (!tbl.seats.some(s => s.id === 'birch_ai_bot')) {
+      normalizePokerTable(tbl);
+      const exBot = tbl.seats.find(s => s.id === 'birch_ai_bot');
+      if (exBot) {
+        if (exBot.stack <= 0) {
+          exBot.stack = startStack;
+          exBot.busted = false;
+          exBot.status = 'Готов 🪓';
+        }
+      } else if (tbl.seats.length < 6) {
         tbl.seats.push({
           id: 'birch_ai_bot',
-          name: '🤖 Берёзовый Леший',
+          name: '🤖 Леший AI',
           photo: '',
           stack: startStack,
           bet: 0,
@@ -1566,47 +2105,78 @@
           busted: false,
           acted: false,
           isBot: true,
-          status: 'Точит топор 🪓'
+          status: 'Готов 🪓'
         });
       }
+      tbl.updatedAt = Date.now();
       return tbl;
     });
   }
 
   async function startTableNewHand(tid) {
+    let knockouts = [];
+    let duelWinnerId = '';
+
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
-      if (!tbl || !Array.isArray(tbl.seats)) return tbl;
-      const alive = tbl.seats.filter(s => (Number(s.stack) || 0) > 0 && !s.busted);
+      if (!tbl) return tbl;
+      normalizePokerTable(tbl);
+      if (!tbl.seats.length || tbl.stage === 'finished') return tbl;
+
+      // На открытых кэш-столах 24/7 бот докупается при 0 стеке, чтобы игра не застревала
+      const isCash = !tbl.isTournament && !String(tid).startsWith('duel_');
+      if (isCash) {
+        const bot = tbl.seats.find(s => s.isBot && s.stack <= 0);
+        if (bot) {
+          bot.stack = 20000;
+          bot.busted = false;
+        }
+      }
+
+      const alive = tbl.seats.filter(s => s.stack > 0);
       if (alive.length < 2) {
-        tbl.stage = 'waiting';
+        tbl.stage = String(tid).startsWith('duel_') && alive.length === 1 ? 'finished' : 'waiting';
+        tbl.updatedAt = Date.now();
         return tbl;
       }
+
       const deck = makeDeck();
       const lvl = Number(tbl.blindLevel) || 1;
       const bl = BLIND_LEVELS[Math.min(BLIND_LEVELS.length - 1, lvl - 1)];
 
-      tbl.dealerIdx = ((Number(tbl.dealerIdx) || 0) + 1) % tbl.seats.length;
-      tbl.board = [];
-      tbl.pot = 0;
-      tbl.stage = 'preflop';
-      tbl.winnerBanner = '';
-
       tbl.seats.forEach(s => {
-        if ((Number(s.stack) || 0) <= 0) {
-          s.busted = true; s.folded = true; s.cards = []; s.bet = 0; s.totalBet = 0;
+        if (s.stack <= 0) {
+          s.busted = true; s.folded = true; s.allIn = false; s.acted = true;
+          s.cards = []; s.bet = 0; s.totalBet = 0;
           s.status = 'Расколот 🪵';
         } else {
           s.busted = false; s.folded = false; s.allIn = false; s.acted = false;
           s.bet = 0; s.totalBet = 0;
           s.cards = [deck.pop(), deck.pop()];
-          s.status = Math.random() > 0.5 ? 'Точит топор 🪓' : 'В засаде 🌿';
+          s.status = 'В игре';
         }
       });
 
       const activeIdx = tbl.seats.map((s, i) => (!s.busted ? i : -1)).filter(i => i >= 0);
-      const sbPos = activeIdx[(activeIdx.indexOf(tbl.dealerIdx) + 1 + activeIdx.length) % activeIdx.length];
-      const bbPos = activeIdx[(activeIdx.indexOf(sbPos) + 1) % activeIdx.length];
-      const firstTurn = activeIdx[(activeIdx.indexOf(bbPos) + 1) % activeIdx.length];
+      const nextDealer = activeIdx.find(i => i > tbl.dealerIdx);
+      tbl.dealerIdx = nextDealer !== undefined ? nextDealer : activeIdx[0];
+      const dPos = activeIdx.indexOf(tbl.dealerIdx);
+
+      let sbPos, bbPos, firstTurnCand;
+      if (activeIdx.length === 2) {
+        sbPos = activeIdx[dPos];
+        bbPos = activeIdx[(dPos + 1) % 2];
+        firstTurnCand = sbPos;
+      } else {
+        sbPos = activeIdx[(dPos + 1) % activeIdx.length];
+        bbPos = activeIdx[(dPos + 2) % activeIdx.length];
+        firstTurnCand = activeIdx[(dPos + 3) % activeIdx.length];
+      }
+
+      tbl.board = [];
+      tbl.pot = 0;
+      tbl.stage = 'preflop';
+      tbl.winnerBanner = '';
+      tbl.deck = deck;
 
       const postBlind = (seat, amount, label) => {
         const pay = Math.min(seat.stack, amount);
@@ -1617,16 +2187,36 @@
         if (seat.stack === 0) seat.allIn = true;
         seat.status = label;
       };
-      postBlind(tbl.seats[sbPos], bl.sb, `МБ ${bl.sb}`);
-      postBlind(tbl.seats[bbPos], bl.bb, `ББ ${bl.bb}`);
+      postBlind(tbl.seats[sbPos], bl.sb, `МБ ${fmt(bl.sb)}`);
+      postBlind(tbl.seats[bbPos], bl.bb, `ББ ${fmt(bl.bb)}`);
 
       tbl.currentBet = Math.max(tbl.seats[sbPos].bet, tbl.seats[bbPos].bet);
-      tbl.turnIdx = firstTurn;
+      tbl.logs = tbl.logs.slice(-11).concat([`🃏 Раздача • Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵`]);
+
+      const canAct = tbl.seats.filter(s => !s.folded && !s.busted && !s.allIn && s.stack > 0);
+      const needDecision = canAct.some(s => s.bet < tbl.currentBet) || canAct.length >= 2;
+      if (!needDecision || canAct.length === 0) {
+        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+        return tbl;
+      }
+
+      const n = tbl.seats.length;
+      let chosenTurn = firstTurnCand;
+      for (let step = 0; step < n; step++) {
+        const idx = (firstTurnCand + step) % n;
+        const c = tbl.seats[idx];
+        if (c && !c.folded && !c.busted && !c.allIn && c.stack > 0) {
+          chosenTurn = idx;
+          break;
+        }
+      }
+      tbl.turnIdx = chosenTurn;
       tbl.turnDeadline = Date.now() + TURN_TIMEOUT_MS;
-      tbl.deck = deck;
-      tbl.logs = (tbl.logs || []).slice(-12).concat([`🃏 Новая раздача! Блайнды ${bl.sb}/${bl.bb} 🪵`]);
+      tbl.updatedAt = Date.now();
       return tbl;
     });
+
+    await processPokerPostEffects(tid, knockouts, duelWinnerId);
   }
 
   async function applyPokerPlayerAction(tid, actorId, action, raiseTo = 0) {
@@ -1634,20 +2224,23 @@
     let duelWinnerId = '';
 
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
-      if (!tbl || !['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return tbl;
+      if (!tbl) return tbl;
+      normalizePokerTable(tbl);
+      if (!['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return tbl;
+
       const seat = tbl.seats[tbl.turnIdx];
       if (!seat || String(seat.id) !== String(actorId)) return tbl;
 
-      const toCall = Math.max(0, (Number(tbl.currentBet) || 0) - (Number(seat.bet) || 0));
-      if (action === 'fold') {
+      const toCall = Math.max(0, tbl.currentBet - seat.bet);
+      if (action === 'fold' && toCall > 0) {
         seat.folded = true;
         seat.acted = true;
-        seat.status = 'Пас в бересту 🍂';
-        tbl.logs = (tbl.logs || []).slice(-12).concat([`🍂 ${seat.name}: Пас`]);
-      } else if (action === 'check' || (action === 'call' && toCall === 0)) {
+        seat.status = 'Пас 🍂';
+        tbl.logs = tbl.logs.slice(-11).concat([`🍂 ${seat.name}: Пас`]);
+      } else if (action === 'check' || (action === 'fold' && toCall === 0) || (action === 'call' && toCall === 0)) {
         seat.acted = true;
-        seat.status = 'В засаде (Чек) 🌿';
-        tbl.logs = (tbl.logs || []).slice(-12).concat([`🌿 ${seat.name}: Чек`]);
+        seat.status = 'Чек 🌿';
+        tbl.logs = tbl.logs.slice(-11).concat([`🌿 ${seat.name}: Чек`]);
       } else if (action === 'call') {
         const pay = Math.min(seat.stack, toCall);
         seat.stack -= pay;
@@ -1656,10 +2249,12 @@
         tbl.pot += pay;
         seat.acted = true;
         if (seat.stack === 0) seat.allIn = true;
-        seat.status = seat.allIn ? 'Ва-банк на чурках! 🔥' : `Колл ${pay} 🪵`;
-        tbl.logs = (tbl.logs || []).slice(-12).concat([`🪵 ${seat.name}: Колл ${fmt(pay)}`]);
+        seat.status = seat.allIn ? 'Ва-банк 🔥' : `Колл ${fmt(pay)}`;
+        tbl.logs = tbl.logs.slice(-11).concat([`🪵 ${seat.name}: Колл ${fmt(pay)}`]);
       } else if (action === 'raise') {
-        const desiredTotalBet = Math.max((Number(tbl.currentBet) || 0) * 2, Number(raiseTo) || 0);
+        const lvl = Number(tbl.blindLevel) || 1;
+        const bb = BLIND_LEVELS[Math.min(BLIND_LEVELS.length - 1, lvl - 1)].bb;
+        const desiredTotalBet = Math.max(tbl.currentBet + bb, tbl.currentBet * 2, Number(raiseTo) || 0);
         const add = Math.min(seat.stack, Math.max(toCall, desiredTotalBet - seat.bet));
         seat.stack -= add;
         seat.bet += add;
@@ -1668,32 +2263,27 @@
         seat.acted = true;
         if (seat.bet > tbl.currentBet) {
           tbl.currentBet = seat.bet;
-          tbl.seats.forEach((s, idx) => { if (idx !== tbl.turnIdx && !s.folded && !s.busted && !s.allIn) s.acted = false; });
+          tbl.seats.forEach((s, idx) => {
+            if (idx !== tbl.turnIdx && !s.folded && !s.busted && !s.allIn && s.stack > 0) s.acted = false;
+          });
         }
         if (seat.stack === 0) seat.allIn = true;
-        seat.status = seat.allIn ? 'Ва-банк на чурках! 🔥' : `Рейз до ${fmt(seat.bet)} 🪵`;
-        tbl.logs = (tbl.logs || []).slice(-12).concat([`🪓 ${seat.name}: Рейз до ${fmt(seat.bet)}`]);
+        seat.status = seat.allIn ? 'Ва-банк 🔥' : `Рейз ${fmt(seat.bet)}`;
+        tbl.logs = tbl.logs.slice(-11).concat([`🪓 ${seat.name}: Рейз до ${fmt(seat.bet)}`]);
       }
 
       const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
-      if (contenders.length === 1) {
-        const w = contenders[0];
-        w.stack += tbl.pot;
-        tbl.winnerBanner = `🏆 ${w.name} забирает банк ${fmt(tbl.pot)} 🪵 (соперники сбросили)!`;
-        tbl.logs = (tbl.logs || []).slice(-12).concat([tbl.winnerBanner]);
-        tbl.pot = 0;
-        tbl.stage = 'showdown';
-        tbl.turnDeadline = Date.now() + 4500;
+      if (contenders.length <= 1) {
+        duelWinnerId = resolveShowdownInPlace(tbl, tid, knockouts);
         return tbl;
       }
 
-      // Ищем следующего активного игрока
       const n = tbl.seats.length;
       let nextIdx = -1;
       for (let step = 1; step <= n; step++) {
         const candIdx = (tbl.turnIdx + step) % n;
         const c = tbl.seats[candIdx];
-        if (!c.folded && !c.busted && !c.allIn && (!c.acted || c.bet < tbl.currentBet)) {
+        if (c && !c.folded && !c.busted && !c.allIn && c.stack > 0 && (!c.acted || c.bet < tbl.currentBet)) {
           nextIdx = candIdx;
           break;
         }
@@ -1702,266 +2292,342 @@
       if (nextIdx !== -1) {
         tbl.turnIdx = nextIdx;
         tbl.turnDeadline = Date.now() + TURN_TIMEOUT_MS;
+        tbl.updatedAt = Date.now();
         return tbl;
       }
 
-      // Раунд торговли завершён — переход на следующую улицу или Шоудаун
-      const canActCount = contenders.filter(s => !s.allIn).length;
-      const advanceStreet = () => {
-        tbl.seats.forEach(s => { s.bet = 0; s.acted = false; });
-        tbl.currentBet = 0;
-        if (tbl.stage === 'preflop') {
-          tbl.board.push(tbl.deck.pop(), tbl.deck.pop(), tbl.deck.pop());
-          tbl.stage = 'flop';
-        } else if (tbl.stage === 'flop') {
-          tbl.board.push(tbl.deck.pop());
-          tbl.stage = 'turn';
-        } else if (tbl.stage === 'turn') {
-          tbl.board.push(tbl.deck.pop());
-          tbl.stage = 'river';
-        } else {
-          tbl.stage = 'showdown';
-        }
-      };
-
-      if (canActCount <= 1) {
-        while (tbl.stage !== 'showdown') advanceStreet();
-      } else {
-        advanceStreet();
-      }
-
-      if (tbl.stage !== 'showdown') {
-        for (let step = 1; step <= n; step++) {
-          const idx = (tbl.dealerIdx + step) % n;
-          const c = tbl.seats[idx];
-          if (!c.folded && !c.busted && !c.allIn) {
-            tbl.turnIdx = idx;
-            break;
-          }
-        }
-        tbl.turnDeadline = Date.now() + TURN_TIMEOUT_MS;
-        return tbl;
-      }
-
-      // ШОУДАУН + САЙД-ПОТЫ + БАУНТИ ЗА РАСКОЛ ЧУРКИ
-      const evalMap = {};
-      contenders.forEach(s => {
-        const ev = evaluate7Cards([...(s.cards || []), ...(tbl.board || [])]);
-        evalMap[s.id] = ev;
-        s.handName = ev.name;
-        s.status = ev.name;
-      });
-
-      const pots = computeSidePots(tbl.seats);
-      let mainWinner = contenders[0];
-      if (pots.length === 0 && tbl.pot > 0) {
-        pots.push({ amount: tbl.pot, eligibleIds: contenders.map(c => c.id) });
-      }
-      for (const p of pots) {
-        const elig = contenders.filter(c => p.eligibleIds.includes(c.id));
-        if (!elig.length) continue;
-        elig.sort((a, b) => evalMap[b.id].score - evalMap[a.id].score);
-        const topScore = evalMap[elig[0].id].score;
-        const winners = elig.filter(e => evalMap[e.id].score === topScore);
-        const share = Math.floor(p.amount / winners.length);
-        winners.forEach(w => { w.stack += share; });
-        mainWinner = winners[0];
-      }
-
-      tbl.seats.forEach(s => {
-        if (!s.busted && s.stack <= 0) {
-          s.busted = true;
-          s.status = 'Расколот 🪵';
-          if (mainWinner && mainWinner.id !== s.id) {
-            knockouts.push({ victimId: s.id, victimName: s.name, killerId: mainWinner.id, killerName: mainWinner.name });
-          }
-        }
-      });
-
-      const stillAlive = tbl.seats.filter(s => !s.busted && s.stack > 0);
-      if (!tbl.isTournament && String(tid).startsWith('duel_') && stillAlive.length === 1) {
-        duelWinnerId = stillAlive[0].id;
-      }
-
-      tbl.winnerBanner = `🏆 ${mainWinner.name} выиграл раздачу (${evalMap[mainWinner.id].name})!`;
-      tbl.logs = (tbl.logs || []).slice(-12).concat([tbl.winnerBanner]);
-      tbl.pot = 0;
-      tbl.turnDeadline = Date.now() + 5000;
+      duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
       return tbl;
     });
 
-    // Обработка нокаут-баунти (+20 000 коинов и +1 в Наколотые чурки)
-    for (const ko of knockouts) {
-      playKnockoutAnimation(ko.victimName, ko.killerName);
-      if (ko.killerId && ko.killerId !== 'birch_ai_bot') {
-        await adminModifyPlayerResource(ko.killerId, 'coins', 'add', 20000);
-        const kp = await fbGet(`players/${encodeURIComponent(ko.killerId)}`);
-        const nextLogs = ((kp && Number(kp.choppedLogs)) || 0) + 1;
-        await fbPatch(`players/${encodeURIComponent(ko.killerId)}`, { choppedLogs: nextLogs });
-        if (String(ko.killerId) === getMe().id) {
-          updateLocalWallet({ choppedLogs: nextLogs });
-          toast('🪓 БАУНТИ НОКАУТ! +20 000 🪙 и +1 в «Наколотые чурки»!');
-        }
-      }
-    }
+    await processPokerPostEffects(tid, knockouts, duelWinnerId);
+  }
 
-    if (duelWinnerId) {
-      await settleDuelPot(tid, duelWinnerId, false);
+  // Надёжный 5-секундный Watchdog: автоматически устраняет любые зависания WAITING / Ривера / All-In
+  async function recoverStuckPokerTable(tid) {
+    let knockouts = [];
+    let duelWinnerId = '';
+    let shouldDealNew = false;
+
+    await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
+      if (!tbl) return tbl;
+      normalizePokerTable(tbl);
+      const now = Date.now();
+      const idleMs = now - (Number(tbl.updatedAt) || 0);
+
+      if (tbl.stage === 'waiting') {
+        const alive = tbl.seats.filter(s => s.stack > 0 && !s.busted);
+        if (alive.length >= 2 && idleMs >= STUCK_WATCHDOG_MS) {
+          shouldDealNew = true;
+          tbl.updatedAt = now;
+        }
+        return tbl;
+      }
+
+      if (tbl.stage === 'showdown') {
+        if (now > (tbl.turnDeadline || 0) || idleMs >= STUCK_WATCHDOG_MS) {
+          shouldDealNew = true;
+          tbl.updatedAt = now;
+        }
+        return tbl;
+      }
+
+      if (!['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return tbl;
+
+      // Починка недостающих карт борда при сбое сети
+      const reqBoard = tbl.stage === 'flop' ? 3 : (tbl.stage === 'turn' ? 4 : (tbl.stage === 'river' ? 5 : 0));
+      while (tbl.board.length < reqBoard) tbl.board.push(drawCardSafe(tbl));
+
+      const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
+      if (contenders.length <= 1) {
+        duelWinnerId = resolveShowdownInPlace(tbl, tid, knockouts);
+        return tbl;
+      }
+
+      const cur = tbl.seats[tbl.turnIdx];
+      const curInvalid = !cur || cur.folded || cur.busted || cur.allIn || cur.stack <= 0;
+      const pendingActors = tbl.seats.filter(s => !s.folded && !s.busted && !s.allIn && s.stack > 0 && (!s.acted || s.bet < tbl.currentBet));
+
+      if (pendingActors.length === 0) {
+        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+        return tbl;
+      }
+
+      if (curInvalid) {
+        const n = tbl.seats.length;
+        for (let step = 1; step <= n; step++) {
+          const idx = (tbl.turnIdx + step) % n;
+          const c = tbl.seats[idx];
+          if (c && !c.folded && !c.busted && !c.allIn && c.stack > 0 && (!c.acted || c.bet < tbl.currentBet)) {
+            tbl.turnIdx = idx;
+            tbl.turnDeadline = now + TURN_TIMEOUT_MS;
+            tbl.updatedAt = now;
+            return tbl;
+          }
+        }
+        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+        return tbl;
+      }
+
+      return tbl;
+    });
+
+    await processPokerPostEffects(tid, knockouts, duelWinnerId);
+    if (shouldDealNew) {
+      await startTableNewHand(tid);
     }
   }
 
-  // Позиции 6 мест вокруг овального берестяного стола
+  // Позиции 6 мест вокруг овального стола без перекрытий текста и борда
   const SEAT_COORDS = [
-    { left: '50%', top: '91%' },
-    { left: '12%', top: '72%' },
-    { left: '12%', top: '26%' },
-    { left: '50%', top: '9%'  },
-    { left: '88%', top: '26%' },
-    { left: '88%', top: '72%' }
+    { left: '50%', top: '87%' },
+    { left: '15%', top: '69%' },
+    { left: '15%', top: '28%' },
+    { left: '50%', top: '11%' },
+    { left: '85%', top: '28%' },
+    { left: '85%', top: '69%' }
   ];
 
   function renderPokerTableView(body, tableId, isTournament = false) {
     document.getElementById('bgTitle').textContent = isTournament ? '🃏 Турнирный стол Холдема' : '🃏 Берёзовый Покер Холдем';
     const me = getMe();
     let currentTbl = null;
+    let lastCtrlKey = '';
+    let botLock = { key: '', ts: 0 };
+    let watchdogBusy = false;
 
     body.innerHTML = `
-      <div class="bg-ptop" id="pokerTopBar"></div>
-      <div class="bg-table-wrap">
-        <div class="bg-table"></div>
-        <div class="bg-center">
-          <div class="bg-board" id="pokerBoard"></div>
-          <div class="bg-pot" id="pokerPot">${stickSvg(true)} 0</div>
-          <div class="bg-stage" id="pokerStageTxt">Ожидание</div>
+      <div class="bg-poker-shell">
+        <div class="bg-ptop" id="pokerTopBar"></div>
+        <div class="bg-table-wrap">
+          <div class="bg-table"></div>
+          <div class="bg-center">
+            <div class="bg-pot" id="pokerPot">${stickSvg(true)} Банк: 0 🪵</div>
+            <div class="bg-board" id="pokerBoard"></div>
+            <div class="bg-stage" id="pokerStageTxt">ОЖИДАНИЕ</div>
+          </div>
+          <div id="pokerSeatsLayer"></div>
         </div>
-        <div id="pokerSeatsLayer"></div>
+        <div class="bg-actions" id="pokerControls"></div>
+        <div class="bg-log" id="pokerLogs"></div>
       </div>
-      <div class="bg-actions" id="pokerControls"></div>
-      <div class="bg-log" id="pokerLogs"></div>
     `;
 
-    function drawTable(tbl) {
+    function scheduleBotMoveIfNeeded(tbl) {
+      if (!tbl || !['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return;
+      const seats = tbl.seats || [];
+      const turnSeat = seats[tbl.turnIdx];
+      if (!turnSeat || !turnSeat.isBot || turnSeat.folded || turnSeat.busted || turnSeat.allIn) return;
+
+      const stateKey = `${tbl.stage}:${tbl.turnIdx}:${tbl.currentBet}:${(tbl.board || []).length}:${tbl.pot}`;
+      const now = Date.now();
+      if (botLock.key === stateKey && now - botLock.ts < 2400) return;
+
+      botLock = { key: stateKey, ts: now };
+      const delay = 1000 + Math.floor(Math.random() * 380); // 1.0 - 1.38 сек (быстрый живой темп)
+      setTimeout(async () => {
+        if (!currentTbl || !['preflop', 'flop', 'turn', 'river'].includes(currentTbl.stage)) return;
+        const liveSeat = (currentTbl.seats || [])[currentTbl.turnIdx];
+        if (!liveSeat || !liveSeat.isBot) return;
+        const decision = decideBotPokerAction(currentTbl, liveSeat);
+        await applyPokerPlayerAction(tableId, liveSeat.id, decision.action, decision.raiseTo);
+      }, delay);
+    }
+
+    function drawTable(rawTbl) {
+      if (!rawTbl) return;
+      const tbl = normalizePokerTable({ ...rawTbl });
       currentTbl = tbl;
-      if (!tbl) return;
-      const seats = Array.isArray(tbl.seats) ? tbl.seats : [];
+      const seats = tbl.seats;
       const mySeatIdx = seats.findIndex(s => String(s.id) === me.id);
       const lvl = Number(tbl.blindLevel) || 1;
       const bl = BLIND_LEVELS[Math.min(BLIND_LEVELS.length - 1, lvl - 1)];
+      const isActiveHand = ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage);
+      const isDuel = String(tableId).startsWith('duel_');
 
       body.querySelector('#pokerTopBar').innerHTML = `
-        <span class="bg-chip gold">Блайнды: ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵</span>
-        <span class="bg-chip">Игроков: ${seats.filter(s => !s.busted).length}/${seats.length}</span>
-        <button class="bg-btn sm green" id="pokerDealBtn">🃏 Раздать карты</button>
-        ${!seats.some(s => s.isBot) && seats.length < 6 ? `<button class="bg-btn sm wood" id="pokerAddBotBtn">🤖 +Бот</button>` : ''}
+        <span class="bg-chip gold">Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵</span>
+        <span class="bg-chip">За столом: ${seats.filter(s => !s.busted).length}/${seats.length}</span>
+        ${!isActiveHand && tbl.stage !== 'finished' ? `<button class="bg-btn sm green" id="pokerDealBtn">🃏 Новая раздача</button>` : ''}
+        ${!isDuel && !isTournament && !seats.some(s => s.isBot) && seats.length < 6 ? `<button class="bg-btn sm wood" id="pokerAddBotBtn">🤖 +Бот</button>` : ''}
       `;
-      body.querySelector('#pokerDealBtn').onclick = () => startTableNewHand(tableId);
+      const dealBtn = body.querySelector('#pokerDealBtn');
+      if (dealBtn) dealBtn.onclick = () => startTableNewHand(tableId);
       const addBotBtn = body.querySelector('#pokerAddBotBtn');
       if (addBotBtn) addBotBtn.onclick = async () => { await seatBotAtPokerTable(tableId, 20000); await startTableNewHand(tableId); };
 
       const boardEl = body.querySelector('#pokerBoard');
-      const boardCards = Array.isArray(tbl.board) ? tbl.board : [];
-      boardEl.innerHTML = [0, 1, 2, 3, 4].map(i => boardCards[i] ? cardHtml(boardCards[i], true) : `<span class="bg-card back big" style="opacity:.22"></span>`).join('');
-      body.querySelector('#pokerPot').innerHTML = `${stickSvg(true)} Банк: ${fmt(tbl.pot || 0)} 🪵`;
-      body.querySelector('#pokerStageTxt').textContent = tbl.winnerBanner || `Улица: ${tbl.stage || 'ожидание'}`;
+      const boardCards = tbl.board;
+      boardEl.innerHTML = [0, 1, 2, 3, 4].map(i => (
+        boardCards[i] ? cardHtml(boardCards[i], true) : `<span class="bg-card slot big"></span>`
+      )).join('');
+
+      body.querySelector('#pokerPot').innerHTML = `${stickSvg(true)} Банк: ${fmt(tbl.pot)} 🪵`;
+      body.querySelector('#pokerStageTxt').textContent = tbl.winnerBanner || (STAGE_LABELS[tbl.stage] || String(tbl.stage || 'ОЖИДАНИЕ').toUpperCase());
 
       const seatsLayer = body.querySelector('#pokerSeatsLayer');
       seatsLayer.innerHTML = seats.map((s, idx) => {
-        const relIdx = mySeatIdx >= 0 ? (idx - mySeatIdx + 6) % 6 : idx % 6;
-        const pos = SEAT_COORDS[relIdx];
-        const isTurn = ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage) && tbl.turnIdx === idx;
+        let coordIdx;
+        if (seats.length === 2) {
+          const isHeroSlot = mySeatIdx >= 0 ? idx === mySeatIdx : idx === 0;
+          coordIdx = isHeroSlot ? 0 : 3;
+        } else {
+          coordIdx = mySeatIdx >= 0 ? (idx - mySeatIdx + 6) % 6 : idx % 6;
+        }
+        const pos = SEAT_COORDS[coordIdx];
+        const isTurn = isActiveHand && tbl.turnIdx === idx;
         const isMe = String(s.id) === me.id;
-        const showCards = isMe || tbl.stage === 'showdown';
-        const cards = Array.isArray(s.cards) && s.cards.length
+        const showCards = isMe || tbl.stage === 'showdown' || tbl.stage === 'finished';
+        const cards = s.cards.length
           ? s.cards.map(c => cardHtml(showCards ? c : '??')).join('')
           : '';
-        const remRatio = isTurn ? Math.max(0.05, Math.min(1, ((Number(tbl.turnDeadline) || 0) - Date.now()) / TURN_TIMEOUT_MS)) : 1;
+        const remRatio = isTurn ? Math.max(0.05, Math.min(1, ((tbl.turnDeadline || 0) - Date.now()) / TURN_TIMEOUT_MS)) : 1;
 
         return `
           <div class="bg-seat ${isTurn ? 'turn' : ''} ${isMe ? 'me' : ''} ${s.folded ? 'folded' : ''} ${s.busted ? 'busted' : ''}"
                style="left:${pos.left};top:${pos.top}" data-seatidx="${idx}">
-            <div class="bg-ava" style="--p:${remRatio.toFixed(2)}">
-              ${s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`}
-            </div>
-            <div class="bg-sname">${esc(s.name)}${tbl.dealerIdx === idx ? '<i class="bg-dealer">D</i>' : ''}</div>
-            <div class="bg-sstack">${stickSvg(false)} ${fmt(s.stack || 0)}</div>
-            <div class="bg-sstatus">${esc(s.status || '')}</div>
             <div class="bg-scards">${cards}</div>
-            ${(Number(s.bet) || 0) > 0 ? `<div class="bg-sbet">${stickSvg(false)} ${fmt(s.bet)}</div>` : ''}
+            <div class="bg-seat-box">
+              <div class="bg-ava" style="--p:${remRatio.toFixed(2)}">
+                ${s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`}
+              </div>
+              <div class="bg-sinfo">
+                <div class="bg-sname">${esc(s.name)}</div>
+                <div class="bg-sstack">${stickSvg(false)} ${fmt(s.stack)}</div>
+                <div class="bg-sstatus">${esc(s.status || '')}</div>
+              </div>
+              ${tbl.dealerIdx === idx ? '<i class="bg-dealer">D</i>' : ''}
+            </div>
+            ${s.bet > 0 ? `<div class="bg-sbet">${stickSvg(false)} ${fmt(s.bet)}</div>` : ''}
           </div>
         `;
       }).join('');
 
       const ctrl = body.querySelector('#pokerControls');
-      const isMyTurn = mySeatIdx >= 0 && ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage) && tbl.turnIdx === mySeatIdx;
-      if (isMyTurn) {
-        const mySeat = seats[mySeatIdx];
-        const toCall = Math.max(0, (Number(tbl.currentBet) || 0) - (Number(mySeat.bet) || 0));
-        const minRaise = Math.max((Number(tbl.currentBet) || 0) * 2, bl.bb * 2);
-        const maxRaise = (Number(mySeat.stack) || 0) + (Number(mySeat.bet) || 0);
-        ctrl.innerHTML = `
-          <div class="bg-turnbar"><i id="pokerTurnFill" style="width:100%"></i></div>
-          <div class="bg-row">
-            <button class="bg-btn red" id="actFold">🍂 Пас</button>
-            <button class="bg-btn ghost" id="actCall">${toCall === 0 ? '🌿 Чек' : `🪵 Колл ${fmt(Math.min(mySeat.stack, toCall))}`}</button>
-            <button class="bg-btn green" id="actRaise">🪓 Рейз <span id="raiseValTxt">${fmt(Math.min(maxRaise, minRaise))}</span></button>
-            <button class="bg-btn wood" id="actAllIn">🔥 Ва-банк (${fmt(mySeat.stack)})</button>
-          </div>
-          <input type="range" class="bg-range" id="raiseSlider" min="${Math.min(maxRaise, minRaise)}" max="${maxRaise}" value="${Math.min(maxRaise, minRaise)}">
-        `;
-        const slider = ctrl.querySelector('#raiseSlider');
-        const rTxt = ctrl.querySelector('#raiseValTxt');
-        slider.oninput = () => { rTxt.textContent = fmt(slider.value); };
-        ctrl.querySelector('#actFold').onclick = () => applyPokerPlayerAction(tableId, me.id, 'fold');
-        ctrl.querySelector('#actCall').onclick = () => applyPokerPlayerAction(tableId, me.id, toCall === 0 ? 'check' : 'call');
-        ctrl.querySelector('#actRaise').onclick = () => applyPokerPlayerAction(tableId, me.id, 'raise', Number(slider.value));
-        ctrl.querySelector('#actAllIn').onclick = () => applyPokerPlayerAction(tableId, me.id, 'raise', maxRaise);
-      } else if (mySeatIdx === -1) {
-        ctrl.innerHTML = `<div class="bg-row"><button class="bg-btn green" id="sitHereBtn">🪵 Сесть за этот стол (20 000 🪵)</button></div>`;
-        ctrl.querySelector('#sitHereBtn').onclick = () => seatPlayerAtPokerTable(tableId, tbl.title, isTournament, 20000, lvl);
-      } else {
-        ctrl.innerHTML = `<div class="bg-muted" style="text-align:center">⏳ Ожидание хода соперника (авто-Чек/Фолд через 25 сек AFK)...</div>`;
+      const isMyTurn = mySeatIdx >= 0 && isActiveHand && tbl.turnIdx === mySeatIdx;
+      const mySeat = mySeatIdx >= 0 ? seats[mySeatIdx] : null;
+      const ctrlKey = `${isMyTurn ? 1 : 0}:${mySeatIdx}:${tbl.stage}:${tbl.turnIdx}:${tbl.currentBet}:${mySeat ? mySeat.stack : 0}:${mySeat ? mySeat.bet : 0}`;
+
+      if (ctrlKey !== lastCtrlKey) {
+        lastCtrlKey = ctrlKey;
+        if (isMyTurn && mySeat) {
+          const toCall = Math.max(0, tbl.currentBet - mySeat.bet);
+          const maxRaise = mySeat.stack + mySeat.bet;
+          const minRaise = Math.min(maxRaise, Math.max(tbl.currentBet * 2, tbl.currentBet + bl.bb, bl.bb * 2));
+          const canRaise = mySeat.stack > toCall;
+          ctrl.innerHTML = `
+            <div class="bg-turnbar"><i id="pokerTurnFill" style="transform:scaleX(1)"></i></div>
+            <div class="bg-act-grid">
+              <button class="bg-btn red" id="actFold">🍂 Пас</button>
+              <button class="bg-btn ghost" id="actCall">${toCall === 0 ? '🌿 Чек' : `🪵 Колл ${fmt(Math.min(mySeat.stack, toCall))}`}</button>
+              <button class="bg-btn green" id="actRaise" ${canRaise ? '' : 'disabled'}>🪓 Рейз <span id="raiseValTxt">${fmt(minRaise)}</span></button>
+              <button class="bg-btn wood" id="actAllIn">🔥 Ва-банк</button>
+            </div>
+            ${canRaise ? `<input type="range" class="bg-range" id="raiseSlider" min="${minRaise}" max="${maxRaise}" step="${Math.max(50, Math.floor(bl.sb / 2))}" value="${minRaise}">` : ''}
+          `;
+          const slider = ctrl.querySelector('#raiseSlider');
+          const rTxt = ctrl.querySelector('#raiseValTxt');
+          if (slider && rTxt) {
+            slider.oninput = () => { rTxt.textContent = fmt(slider.value); };
+          }
+          ctrl.querySelector('#actFold').onclick = () => applyPokerPlayerAction(tableId, me.id, 'fold');
+          ctrl.querySelector('#actCall').onclick = () => applyPokerPlayerAction(tableId, me.id, toCall === 0 ? 'check' : 'call');
+          const raiseBtn = ctrl.querySelector('#actRaise');
+          if (raiseBtn && canRaise) {
+            raiseBtn.onclick = () => applyPokerPlayerAction(tableId, me.id, 'raise', slider ? Number(slider.value) : minRaise);
+          }
+          ctrl.querySelector('#actAllIn').onclick = () => applyPokerPlayerAction(tableId, me.id, 'raise', maxRaise);
+        } else if (mySeatIdx === -1 && tbl.stage !== 'finished') {
+          ctrl.innerHTML = `<div class="bg-row"><button class="bg-btn green" id="sitHereBtn" style="width:100%">🪵 Сесть за стол (20 000 🪵)</button></div>`;
+          ctrl.querySelector('#sitHereBtn').onclick = async () => {
+            await seatPlayerAtPokerTable(tableId, tbl.title, isTournament, 20000, lvl);
+            await startTableNewHand(tableId);
+          };
+        } else if (tbl.stage === 'finished') {
+          ctrl.innerHTML = `<div class="bg-result"><h3>🏆 ${esc(tbl.winnerBanner || 'Матч завершён!')}</h3></div>`;
+        } else if (tbl.stage === 'showdown') {
+          ctrl.innerHTML = `<div class="bg-muted" style="text-align:center;font-weight:700;color:var(--bg-gold)">${esc(tbl.winnerBanner || 'Подведение итогов раздачи...')}</div>`;
+        } else if (tbl.stage === 'waiting') {
+          ctrl.innerHTML = `<div class="bg-muted" style="text-align:center">Ожидание второго игрока за столом...</div>`;
+        } else {
+          const actor = seats[tbl.turnIdx];
+          ctrl.innerHTML = `<div class="bg-muted" style="text-align:center">⏳ Ходит <b>${esc(actor ? actor.name : 'соперник')}</b>...</div>`;
+        }
       }
 
       const logsEl = body.querySelector('#pokerLogs');
-      logsEl.innerHTML = (tbl.logs || []).map(l => `<div>${esc(l)}</div>`).join('');
+      logsEl.innerHTML = tbl.logs.slice(-8).map(l => `<div>${esc(l)}</div>`).join('');
+      logsEl.scrollTop = logsEl.scrollHeight;
 
-      // Если сейчас ход бота — бот ходит автоматически
-      const turnSeat = seats[tbl.turnIdx];
-      if (turnSeat && turnSeat.isBot && ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) {
-        setTimeout(() => {
-          if (!currentTbl || currentTbl.turnIdx !== tbl.turnIdx) return;
-          const need = Math.max(0, (Number(currentTbl.currentBet) || 0) - (Number(turnSeat.bet) || 0));
-          const act = need === 0 ? 'check' : (need <= turnSeat.stack * 0.5 || Math.random() > 0.25 ? 'call' : 'fold');
-          applyPokerPlayerAction(tableId, turnSeat.id, act);
-        }, 900);
-      }
+      scheduleBotMoveIfNeeded(tbl);
     }
 
-    // Таймер тлеющей лучинки 25 сек + авто-Check/Fold при AFK
-    _turnInterval = setInterval(() => {
+    // Плавный GPU-таймер + 5-сек Watchdog против зависаний раздачи / бота
+    _turnInterval = setInterval(async () => {
       if (!currentTbl) return;
-      if (currentTbl.stage === 'showdown' && Date.now() > (Number(currentTbl.turnDeadline) || 0)) {
-        startTableNewHand(tableId);
+      const now = Date.now();
+      const idleMs = now - (Number(currentTbl.updatedAt) || 0);
+
+      if (currentTbl.stage === 'showdown' && now > (currentTbl.turnDeadline || 0)) {
+        if (!watchdogBusy) {
+          watchdogBusy = true;
+          try { await startTableNewHand(tableId); } finally { watchdogBusy = false; }
+        }
         return;
       }
+
+      if (currentTbl.stage === 'waiting' && idleMs >= STUCK_WATCHDOG_MS) {
+        const alive = (currentTbl.seats || []).filter(s => s.stack > 0 && !s.busted);
+        if (alive.length >= 2 && !watchdogBusy) {
+          watchdogBusy = true;
+          try { await startTableNewHand(tableId); } finally { watchdogBusy = false; }
+        }
+        return;
+      }
+
       if (!['preflop', 'flop', 'turn', 'river'].includes(currentTbl.stage)) return;
-      const rem = (Number(currentTbl.turnDeadline) || 0) - Date.now();
+
+      const rem = (currentTbl.turnDeadline || 0) - now;
       const ratio = Math.max(0, Math.min(1, rem / TURN_TIMEOUT_MS));
       const fill = body.querySelector('#pokerTurnFill');
-      if (fill) fill.style.width = `${(ratio * 100).toFixed(1)}%`;
+      if (fill) fill.style.transform = `scaleX(${ratio.toFixed(3)})`;
       const turnAva = body.querySelector('.bg-seat.turn .bg-ava');
       if (turnAva) turnAva.style.setProperty('--p', ratio.toFixed(2));
 
-      if (rem <= 0) {
-        const seat = (currentTbl.seats || [])[currentTbl.turnIdx];
-        if (seat) {
-          const toCall = Math.max(0, (Number(currentTbl.currentBet) || 0) - (Number(seat.bet) || 0));
-          applyPokerPlayerAction(tableId, seat.id, toCall === 0 ? 'check' : 'fold');
+      const seat = (currentTbl.seats || [])[currentTbl.turnIdx];
+      if (seat && seat.isBot && !seat.folded && !seat.busted && !seat.allIn) {
+        scheduleBotMoveIfNeeded(currentTbl);
+        if (idleMs >= STUCK_WATCHDOG_MS && !watchdogBusy) {
+          watchdogBusy = true;
+          try {
+            const dec = decideBotPokerAction(currentTbl, seat);
+            await applyPokerPlayerAction(tableId, seat.id, dec.action, dec.raiseTo);
+          } finally {
+            watchdogBusy = false;
+          }
+          return;
         }
       }
-    }, 400);
 
-    _viewUnsubs.push(onValue(`poker_tables/${encodeURIComponent(tableId)}`, drawTable, 1200));
+      const seatInvalid = !seat || seat.folded || seat.busted || seat.allIn || seat.stack <= 0;
+      if ((seatInvalid && idleMs >= STUCK_WATCHDOG_MS) && !watchdogBusy) {
+        watchdogBusy = true;
+        try { await recoverStuckPokerTable(tableId); } finally { watchdogBusy = false; }
+        return;
+      }
+
+      if (rem <= 0 && seat && !watchdogBusy) {
+        watchdogBusy = true;
+        try {
+          const toCall = Math.max(0, (currentTbl.currentBet || 0) - (seat.bet || 0));
+          await applyPokerPlayerAction(tableId, seat.id, toCall === 0 ? 'check' : 'fold');
+        } finally {
+          watchdogBusy = false;
+        }
+      }
+    }, 350);
+
+    _viewUnsubs.push(onValue(`poker_tables/${encodeURIComponent(tableId)}`, drawTable, 1000));
   }
 
   // ==================== 6. СИСТЕМА КЕЙСОВ, 3 УНИКАЛЬНЫХ СКИНА И АДМИН-СКИНЫ ====================
@@ -2573,8 +3239,471 @@
     toast(`🎭 Скин «${sk.name}» выдан игроку ${uid} + отправлен пуш в Telegram!`);
   }
 
+  // ==================== 7. СКВОЗНАЯ СИСТЕМА КРАШ-ЛОГОВ И TELEMETRY ====================
+  const MAX_RECENT_ACTIONS = 15;
+  const _recentActions = [];
+  let _telemetryInitialized = false;
+  let _crashBannerEl = null;
+  let _pendingCrash = null;
+  let _lastCapturedSig = '';
+  let _lastCapturedTs = 0;
+  let _lastBreadcrumbTs = 0;
+
+  function formatLocalYmd(ts) {
+    const d = new Date(Number(ts) || Date.now());
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function getCurrentActiveScreen() {
+    const overlayOpen = Boolean(_overlay && _overlay.classList.contains('show'));
+    if (overlayOpen) {
+      if (_subView && _subView.type) {
+        return `${_subView.type}:${_subView.id || 'session'}`;
+      }
+      return _activeTab || 'tournament';
+    }
+    const mainActive = document.querySelector('.nav-item.active, .tab-btn.active, [data-screen].active');
+    if (mainActive) {
+      const label = (mainActive.getAttribute('data-tab') || mainActive.getAttribute('data-screen') || mainActive.textContent || '').trim().slice(0, 32);
+      if (label) return `main:${label}`;
+    }
+    return 'main_clicker';
+  }
+
+  function pushTelemetryAction(actionLabel) {
+    if (!actionLabel) return;
+    const now = Date.now();
+    const timeStr = new Date(now).toISOString().slice(11, 23);
+    _recentActions.push({ ts: now, time: timeStr, action: String(actionLabel).slice(0, 120) });
+    if (_recentActions.length > MAX_RECENT_ACTIONS) {
+      _recentActions.shift();
+    }
+  }
+
+  function ensureCrashBanner() {
+    if (_crashBannerEl) return _crashBannerEl;
+    if (!document.body) return null;
+    const bar = document.createElement('div');
+    bar.className = 'bg-crash-banner';
+    bar.id = 'bgCrashBanner';
+    bar.innerHTML = `
+      <div class="bg-crash-meta">
+        <b>⚠️ Обнаружен сбой в приложении</b>
+        <small id="bgCrashShortMsg">Нажмите кнопку справа, чтобы отправить лог</small>
+      </div>
+      <button type="button" class="bg-crash-btn" id="bgCrashSendBtn">⚠️ Возникла ошибка</button>
+      <button type="button" class="bg-crash-close" id="bgCrashCloseBtn" aria-label="Закрыть">✕</button>
+    `;
+    document.body.appendChild(bar);
+
+    bar.querySelector('#bgCrashCloseBtn').onclick = () => {
+      bar.classList.remove('show');
+    };
+
+    bar.querySelector('#bgCrashSendBtn').onclick = async () => {
+      if (!_pendingCrash) {
+        bar.classList.remove('show');
+        return;
+      }
+      const sendBtn = bar.querySelector('#bgCrashSendBtn');
+      sendBtn.disabled = true;
+      sendBtn.textContent = '⏳ Отправка...';
+      try {
+        await submitCrashReportToFirebase(_pendingCrash);
+        sendBtn.textContent = '✅ Лог отправлен';
+        toast('✅ Отчёт об ошибке отправлен в систему телеметрии!');
+        setTimeout(() => {
+          bar.classList.remove('show');
+          sendBtn.disabled = false;
+          sendBtn.textContent = '⚠️ Возникла ошибка';
+        }, 900);
+      } catch (err) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = '⚠️ Возникла ошибка';
+        toast('⚠️ Не удалось отправить лог, проверьте сеть');
+      }
+    };
+
+    _crashBannerEl = bar;
+    return bar;
+  }
+
+  async function submitCrashReportToFirebase(crashData) {
+    const me = getMe();
+    const ts = Number(crashData.timestamp) || Date.now();
+    const safeUid = String(me.id || 'anon').replace(/[.#$/[\]\s]/g, '_');
+    const nodeKey = `${safeUid}_${ts}`;
+    const payload = {
+      id: nodeKey,
+      userId: String(me.id || 'anon'),
+      userName: String(me.name || 'Тапер'),
+      username: String(me.username || ''),
+      activeTab: String(crashData.activeTab || getCurrentActiveScreen()),
+      message: String(crashData.message || 'Unknown Error').slice(0, 1000),
+      stack: String(crashData.stack || 'No stack trace available').slice(0, 6000),
+      source: String(crashData.source || ''),
+      timestamp: ts,
+      isoTime: new Date(ts).toISOString(),
+      date: formatLocalYmd(ts),
+      recentActions: Array.isArray(crashData.recentActions) ? crashData.recentActions : [..._recentActions],
+      userAgent: String(navigator.userAgent || '').slice(0, 260)
+    };
+    await fbPut(`crash_reports/${encodeURIComponent(nodeKey)}`, payload);
+    return payload;
+  }
+
+  function handleCapturedError(message, stack, source) {
+    const msgStr = String(message || '').trim();
+    if (!msgStr) return;
+    // Игнорируем штатную отмену устаревших fetch-запросов AbortController и шум ResizeObserver
+    if (msgStr.includes('AbortError') || msgStr.includes('The user aborted a request') || msgStr.includes('ResizeObserver loop')) {
+      return;
+    }
+
+    const now = Date.now();
+    const sig = `${msgStr.slice(0, 120)}|${String(source || '').slice(0, 80)}`;
+    if (sig === _lastCapturedSig && now - _lastCapturedTs < 2500) {
+      return;
+    }
+    _lastCapturedSig = sig;
+    _lastCapturedTs = now;
+
+    _pendingCrash = {
+      activeTab: getCurrentActiveScreen(),
+      message: msgStr,
+      stack: String(stack || msgStr),
+      source: String(source || ''),
+      timestamp: now,
+      recentActions: [..._recentActions]
+    };
+
+    const showBanner = () => {
+      const bar = ensureCrashBanner();
+      if (!bar) return;
+      const shortEl = bar.querySelector('#bgCrashShortMsg');
+      const sendBtn = bar.querySelector('#bgCrashSendBtn');
+      if (shortEl) shortEl.textContent = `${_pendingCrash.activeTab} • ${msgStr.slice(0, 90)}`;
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = '⚠️ Возникла ошибка';
+      }
+      bar.classList.add('show');
+    };
+
+    if (document.body) showBanner();
+    else document.addEventListener('DOMContentLoaded', showBanner, { once: true });
+  }
+
+  function initTelemetrySystem() {
+    if (_telemetryInitialized) return;
+    _telemetryInitialized = true;
+
+    window.addEventListener('error', (event) => {
+      if (!event) return;
+      const errObj = event.error;
+      const msg = (errObj && errObj.message) || event.message || 'Runtime Script Error';
+      const stack = (errObj && errObj.stack) || `${msg}\n    at ${event.filename || 'unknown'}:${event.lineno || 0}:${event.colno || 0}`;
+      const src = `${event.filename || 'window.error'}:${event.lineno || 0}:${event.colno || 0}`;
+      handleCapturedError(msg, stack, src);
+    });
+
+    const prevOnError = window.onerror;
+    window.onerror = function (message, source, lineno, colno, error) {
+      const msg = (error && error.message) || String(message || 'window.onerror');
+      const stack = (error && error.stack) || `${msg}\n    at ${source || 'script'}:${lineno || 0}:${colno || 0}`;
+      handleCapturedError(msg, stack, `${source || 'onerror'}:${lineno || 0}:${colno || 0}`);
+      if (typeof prevOnError === 'function') {
+        try { return prevOnError.apply(this, arguments); } catch (e) {}
+      }
+      return false;
+    };
+
+    window.addEventListener('unhandledrejection', (event) => {
+      const reason = event ? event.reason : null;
+      if (reason && (reason.name === 'AbortError' || String(reason.message || '').includes('AbortError'))) return;
+      let msg = 'Unhandled Promise Rejection';
+      let stack = '';
+      if (reason instanceof Error) {
+        msg = reason.message || msg;
+        stack = reason.stack || msg;
+      } else if (reason && typeof reason === 'object') {
+        try { msg = reason.message || JSON.stringify(reason); } catch (e) { msg = String(reason); }
+        stack = reason.stack || msg;
+      } else if (reason !== undefined && reason !== null) {
+        msg = String(reason);
+        stack = msg;
+      }
+      handleCapturedError(msg, stack, 'unhandledrejection');
+    });
+
+    // Невесомый пассивный сборщик действий: полностью игнорирует частые тапы по монете/печеньке
+    document.addEventListener('click', (e) => {
+      const now = Date.now();
+      if (now - _lastBreadcrumbTs < 180) return;
+      const t = e.target;
+      if (!t || typeof t.closest !== 'function') return;
+      const interactive = t.closest('#birchOverlay button, #birchOverlay [data-sq], #birchZoneBtn, #birchAdminBtn, .nav-item, .tab-btn');
+      if (!interactive) return;
+      _lastBreadcrumbTs = now;
+      const sq = interactive.getAttribute('data-sq');
+      if (sq) {
+        pushTelemetryAction(`chess_sq:${sq}`);
+        return;
+      }
+      const idPart = interactive.id ? `#${interactive.id}` : '';
+      const txtPart = (interactive.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 36);
+      pushTelemetryAction(`click${idPart}${txtPart ? `(${txtPart})` : ''}`);
+    }, { passive: true, capture: true });
+  }
+
+  function doesCrashMatchDate(item, ymdFilter) {
+    if (!item || typeof item !== 'object') return false;
+    if (!ymdFilter || ymdFilter === 'all') return true;
+    if (item.date === ymdFilter) return true;
+    if (item.timestamp) {
+      if (formatLocalYmd(item.timestamp) === ymdFilter) return true;
+      const utcYmd = new Date(Number(item.timestamp)).toISOString().slice(0, 10);
+      if (utcYmd === ymdFilter) return true;
+    }
+    return false;
+  }
+
+  function buildStructuredCrashReportTxt(items, dateLabel) {
+    const sorted = [...items].sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0));
+    const uniqueUsers = new Map();
+    const tabStats = {};
+    const groupsMap = new Map();
+
+    for (const r of sorted) {
+      const uid = String(r.userId || 'unknown');
+      const uname = r.userName ? `${r.userName}${r.username ? ' @' + r.username : ''}` : uid;
+      uniqueUsers.set(uid, uname);
+
+      const tab = String(r.activeTab || 'unknown');
+      tabStats[tab] = (tabStats[tab] || 0) + 1;
+
+      const msg = String(r.message || 'Unknown Error').trim();
+      const firstStackLine = String(r.stack || '').split('\n').slice(0, 2).join(' | ').trim();
+      const sigKey = `${msg} || ${tab}`;
+      if (!groupsMap.has(sigKey)) {
+        groupsMap.set(sigKey, {
+          message: msg,
+          activeTab: tab,
+          sampleStack: String(r.stack || firstStackLine || '—'),
+          count: 0,
+          users: new Map(),
+          firstTs: Number(r.timestamp) || 0,
+          lastTs: Number(r.timestamp) || 0
+        });
+      }
+      const g = groupsMap.get(sigKey);
+      g.count += 1;
+      g.users.set(uid, uname);
+      const ts = Number(r.timestamp) || 0;
+      if (ts && (!g.firstTs || ts < g.firstTs)) g.firstTs = ts;
+      if (ts && ts > g.lastTs) g.lastTs = ts;
+    }
+
+    const groups = [...groupsMap.values()].sort((a, b) => b.count - a.count);
+    const lines = [];
+    lines.push('================================================================================');
+    lines.push(`OREO67 — CRASH TELEMETRY & DIAGNOSTIC REPORT (${dateLabel})`);
+    lines.push(`Generated At : ${new Date().toISOString()}`);
+    lines.push('Format       : Human-Readable & AI-Agent Structured Log v1.0');
+    lines.push('================================================================================');
+    lines.push('');
+    lines.push('[SECTION 1: EXECUTIVE SUMMARY]');
+    lines.push(`- Filter Period          : ${dateLabel}`);
+    lines.push(`- Total Crash Events     : ${sorted.length}`);
+    lines.push(`- Unique Error Groups    : ${groups.length}`);
+    lines.push(`- Affected Users Count   : ${uniqueUsers.size}`);
+    if (uniqueUsers.size > 0) {
+      const uList = [...uniqueUsers.entries()].map(([id, nm]) => `${id} (${nm})`).join(', ');
+      lines.push(`- Affected Users List    : ${uList}`);
+    }
+    const tabSummary = Object.entries(tabStats).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(' | ');
+    lines.push(`- Breakdown by Screen    : ${tabSummary || 'none'}`);
+    lines.push('');
+
+    lines.push('[SECTION 2: AGGREGATED ERROR SIGNATURES (RANKED BY FREQUENCY)]');
+    if (!groups.length) {
+      lines.push('No crashes recorded for the selected period.');
+    } else {
+      groups.forEach((g, idx) => {
+        const usersStr = [...g.users.entries()].map(([id, nm]) => `${id} (${nm})`).join(', ');
+        lines.push(`--------------------------------------------------------------------------------`);
+        lines.push(`GROUP #${idx + 1} | Occurrences: ${g.count}x | Affected Users (${g.users.size}): ${usersStr}`);
+        lines.push(`Screen / Mini-Game : ${g.activeTab}`);
+        lines.push(`First Seen         : ${g.firstTs ? new Date(g.firstTs).toISOString() : '—'}`);
+        lines.push(`Last Seen          : ${g.lastTs ? new Date(g.lastTs).toISOString() : '—'}`);
+        lines.push(`Error Message      : ${g.message}`);
+        lines.push('Primary Stack Trace:');
+        String(g.sampleStack || '—').split('\n').slice(0, 8).forEach(sl => lines.push(`  ${sl}`));
+      });
+    }
+    lines.push('');
+
+    lines.push('[SECTION 3: CHRONOLOGICAL CRASH EVENTS & USER BREADCRUMBS]');
+    sorted.forEach((r, idx) => {
+      lines.push('--------------------------------------------------------------------------------');
+      lines.push(`EVENT #${idx + 1} | Key: ${r.id || 'n/a'}`);
+      lines.push(`Timestamp   : ${r.isoTime || (r.timestamp ? new Date(Number(r.timestamp)).toISOString() : 'n/a')} (${r.timestamp || 0})`);
+      lines.push(`Player      : ID=${r.userId || 'anon'} | Name=${r.userName || '—'}${r.username ? ' (@' + r.username + ')' : ''}`);
+      lines.push(`ActiveTab   : ${r.activeTab || 'unknown'}`);
+      if (r.source) lines.push(`Source      : ${r.source}`);
+      if (r.userAgent) lines.push(`UserAgent   : ${r.userAgent}`);
+      lines.push(`Message     : ${r.message || '—'}`);
+      lines.push('Stack Trace :');
+      String(r.stack || '—').split('\n').forEach(sl => lines.push(`  ${sl}`));
+      const acts = toArr(r.recentActions);
+      lines.push(`Recent User Actions (${acts.length}):`);
+      if (!acts.length) {
+        lines.push('  (no recorded actions prior to error)');
+      } else {
+        acts.forEach((a, ai) => {
+          lines.push(`  ${ai + 1}. [${a.time || a.ts || ''}] ${a.action || JSON.stringify(a)}`);
+        });
+      }
+    });
+    lines.push('================================================================================');
+    return lines.join('\n');
+  }
+
+  function downloadTextFile(filename, textContent) {
+    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 1500);
+  }
+
+  let _admCrashDate = formatLocalYmd(Date.now());
+  let _admCrashAllDates = false;
+
+  function renderAdminCrashesSub(sub) {
+    sub.innerHTML = `
+      <div class="bg-sec">
+        <h3>🧯 Телеметрия и выгрузка краш-логов (.txt)</h3>
+        <div class="bg-row" style="margin-bottom:8px">
+          <input type="date" class="bg-input" id="admCrashDateInp" value="${esc(_admCrashDate)}" style="max-width:170px">
+          <button class="bg-btn sm ${_admCrashAllDates ? '' : 'ghost'}" id="admCrashToggleAll">
+            ${_admCrashAllDates ? '📅 Показаны: ВСЕ дни' : '📅 Только за выбранный день'}
+          </button>
+          <button class="bg-btn sm wood" id="admCrashTestBtn">🧪 Тест плашки</button>
+        </div>
+        <div class="bg-row" style="margin-bottom:10px">
+          <button class="bg-btn green" id="admCrashDownloadBtn">📥 Скачать crashes_${esc(_admCrashAllDates ? 'all' : _admCrashDate)}.txt</button>
+          <button class="bg-btn ghost" id="admCrashCopyBtn">📋 Скопировать отчёт</button>
+        </div>
+        <div id="admCrashStats" class="bg-muted" style="margin-bottom:8px">Загрузка узла crash_reports из Firebase...</div>
+        <div id="admCrashList"></div>
+      </div>
+    `;
+
+    let latestReports = [];
+
+    const dateInp = sub.querySelector('#admCrashDateInp');
+    dateInp.onchange = () => {
+      _admCrashDate = dateInp.value || formatLocalYmd(Date.now());
+      _admCrashAllDates = false;
+      renderAdminCrashesSub(sub);
+    };
+
+    sub.querySelector('#admCrashToggleAll').onclick = () => {
+      _admCrashAllDates = !_admCrashAllDates;
+      renderAdminCrashesSub(sub);
+    };
+
+    sub.querySelector('#admCrashTestBtn').onclick = () => {
+      handleCapturedError(
+        'Test Crash Telemetry: проверка плашки сбора ошибок',
+        'Error: Test Crash Telemetry\n    at renderAdminCrashesSub (birch_games.js)',
+        'admin_manual_test'
+      );
+    };
+
+    sub.querySelector('#admCrashDownloadBtn').onclick = () => {
+      const label = _admCrashAllDates ? 'all' : _admCrashDate;
+      const txt = buildStructuredCrashReportTxt(latestReports, label);
+      downloadTextFile(`crashes_${label}.txt`, txt);
+      toast(`📥 Файл crashes_${label}.txt сформирован (${latestReports.length} записей)`);
+    };
+
+    sub.querySelector('#admCrashCopyBtn').onclick = async () => {
+      const label = _admCrashAllDates ? 'all' : _admCrashDate;
+      const txt = buildStructuredCrashReportTxt(latestReports, label);
+      try {
+        await navigator.clipboard.writeText(txt);
+        toast('📋 Структурированный отчёт скопирован в буфер обмена!');
+      } catch (e) {
+        toast('⚠️ Буфер обмена недоступен — используйте скачивание .txt');
+      }
+    };
+
+    function drawCrashes(raw) {
+      const statsEl = sub.querySelector('#admCrashStats');
+      const listEl = sub.querySelector('#admCrashList');
+      if (!statsEl || !listEl) return;
+
+      const allArr = Object.entries(raw || {}).map(([k, v]) => (v && typeof v === 'object' ? { id: k, ...v } : null)).filter(Boolean);
+      const filterKey = _admCrashAllDates ? 'all' : _admCrashDate;
+      latestReports = allArr.filter(r => doesCrashMatchDate(r, filterKey));
+      latestReports.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+
+      const usersSet = new Set(latestReports.map(r => String(r.userId || 'anon')));
+      statsEl.innerHTML = `Найдено логов: <b style="color:var(--bg-gold)">${latestReports.length}</b> (всего в БД: ${allArr.length}) • Затронуто игроков: <b>${usersSet.size}</b> • Команда в боте: <code>/get_crashes</code>`;
+
+      if (!latestReports.length) {
+        listEl.innerHTML = `<div class="bg-muted">✨ За выбранный период критических ошибок не зафиксировано.</div>`;
+        return;
+      }
+
+      // Группируем по тексту ошибки + экрану для наглядности частоты
+      const grouped = new Map();
+      for (const r of latestReports) {
+        const k = `${r.activeTab || '?'}::${r.message || '?'}`;
+        if (!grouped.has(k)) grouped.set(k, { sample: r, count: 0, users: new Set() });
+        const g = grouped.get(k);
+        g.count += 1;
+        g.users.add(String(r.userId || 'anon'));
+      }
+
+      listEl.innerHTML = [...grouped.values()].sort((a, b) => b.count - a.count).slice(0, 25).map(g => {
+        const r = g.sample;
+        const timeStr = r.isoTime ? r.isoTime.replace('T', ' ').slice(0, 19) : '';
+        return `
+          <div class="bg-card-row" style="margin-bottom:8px">
+            <div class="bg-row sp">
+              <span class="bg-chip gold">Повторов: ${g.count}× • Игроков: ${g.users.size}</span>
+              <span class="bg-chip">${esc(r.activeTab || 'unknown')}</span>
+            </div>
+            <div style="font-weight:800;font-size:12.5px;margin-top:6px;color:#ff99ac">${esc(r.message || 'Ошибка')}</div>
+            <div class="bg-muted" style="font-size:11px;margin-top:2px">Последний: ID ${esc(r.userId)} (${esc(r.userName || '—')}) • ${esc(timeStr)}</div>
+            <div class="bg-crash-pre">${esc(String(r.stack || '').slice(0, 500))}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    _viewUnsubs.push(onValue('crash_reports', drawCrashes, 2500));
+  }
+
+  // Запускаем перехватчик ошибок сразу при загрузке скрипта
+  initTelemetrySystem();
+
   // ---------- АВТО-ИНИЦИАЛИЗАЦИЯ И ПЕРЕХВАТ DEEP-LINKS ----------
   function initBirchGames() {
+    initTelemetrySystem();
     registerExclusiveSkinsIntoMainGame();
     applyExclusiveSkinTheme(getLocalState().equippedSkin || 'classic');
 
@@ -2620,7 +3749,16 @@
     spawnParticles,
     isExclusiveSkin,
     onSkinChanged: applyExclusiveSkinTheme,
-    syncAdminGrantsForMe
+    syncAdminGrantsForMe,
+    reportCrash: handleCapturedError,
+    exportCrashesTxt: async (ymd = formatLocalYmd(Date.now())) => {
+      const raw = await fbGet('crash_reports', true);
+      const arr = Object.entries(raw || {}).map(([k, v]) => (v && typeof v === 'object' ? { id: k, ...v } : null)).filter(Boolean);
+      const filtered = arr.filter(r => doesCrashMatchDate(r, ymd));
+      const txt = buildStructuredCrashReportTxt(filtered, ymd);
+      downloadTextFile(`crashes_${ymd}.txt`, txt);
+      return txt;
+    }
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initBirchGames);
   else initBirchGames();
