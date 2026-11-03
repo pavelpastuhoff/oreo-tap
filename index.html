@@ -141,6 +141,8 @@
   #cookie { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; }
   .layer {
     position: absolute; inset: 0; border-radius: 50%;
+    pointer-events: none;
+    -webkit-backface-visibility: hidden;
     backface-visibility: hidden;
   }
   .wafer { background: #2a1710; }
@@ -148,43 +150,39 @@
   .cream { inset: 5%; background: #f6f1e4; }
   .cream.mid { background: #fff9ea; }
   .top { background: radial-gradient(circle at 35% 30%, #4a2d20 0%, #2a1710 55%, #1a0d08 100%); overflow: hidden; }
-  .top svg { width: 100%; height: 100%; display: block; }
+  .top svg { width: 100%; height: 100%; display: block; pointer-events: none; -webkit-backface-visibility: hidden; backface-visibility: hidden; }
 
-  /* Многослойный 3D-скин Шушик (верхняя крышка + верхний обод + рубиновая прослойка + нижний обод) */
-  #stage.skin-shushik-3d {
-    filter: drop-shadow(0 10px 24px rgba(139, 26, 40, 0.55));
-  }
-  #cookie.skin-shushik-3d .layer.wafer,
-  #cookie.skin-shushik-3d .layer.cream {
-    transform: translateZ(var(--layer-z, 0px)) rotateZ(var(--shushik-counter-z, 0deg));
+  /* Оптимизированный 60 FPS 3D-скин Шушик (без тяжелого filter: drop-shadow на 3D-сцене) */
+  #cookie.skin-shushik-3d .layer.shushik-glow-base {
+    border-radius: 50%;
+    background: #18080a;
+    box-shadow: 0 12px 28px rgba(139, 26, 40, 0.65), 0 0 18px rgba(237, 28, 36, 0.35);
   }
   #cookie.skin-shushik-3d .layer.shushik-upper-rim,
   #cookie.skin-shushik-3d .layer.shushik-lower-rim {
     background-color: #1c0c09;
-    background-image:
-      radial-gradient(circle at 50% 42%, rgba(20, 8, 7, 0.94) 0%, rgba(20, 8, 7, 0.76) 56%, transparent 74%),
-      url('assets/skins/shushik_tap_cookie_sidewall.png');
-    background-repeat: no-repeat, repeat;
-    border: 1px solid rgba(92, 42, 32, 0.48);
-    box-shadow: inset 0 -2px 5px rgba(0, 0, 0, 0.82), 0 1px 4px rgba(139, 26, 40, 0.32);
+    background-image: var(--shushik-sidewall-tex, url('assets/skins/shushik_tap_cookie_sidewall.png'));
+    background-position: center center;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    border: 1px solid rgba(92, 42, 32, 0.45);
   }
   #cookie.skin-shushik-3d .layer.shushik-ruby-interlayer {
     background-color: #8B1A28;
-    background-image:
-      radial-gradient(circle at 50% 42%, rgba(88, 10, 22, 0.88) 0%, rgba(139, 26, 40, 0.42) 58%, transparent 76%),
-      url('assets/skins/shushik_tap_cookie_interlayer.png');
-    background-repeat: no-repeat, repeat;
+    background-image: var(--shushik-interlayer-tex, url('assets/skins/shushik_tap_cookie_interlayer.png'));
+    background-position: center center;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
     border: 1px solid rgba(237, 28, 36, 0.55);
-    box-shadow: 0 0 12px rgba(237, 28, 36, 0.52), inset 0 0 6px rgba(240, 234, 214, 0.22);
   }
   #cookie.skin-shushik-3d .layer.top {
     background: transparent !important;
-    overflow: visible;
-    filter: drop-shadow(0 6px 16px rgba(139, 26, 40, 0.62));
+    overflow: hidden;
   }
   .shushik-top-cookie-img {
     width: 100%; height: 100%; display: block; object-fit: contain;
     pointer-events: none; user-select: none; -webkit-user-drag: none;
+    -webkit-backface-visibility: hidden; backface-visibility: hidden;
   }
   .shushik-mini-wrap {
     position: relative; display: inline-flex; align-items: center; justify-content: center;
@@ -1066,7 +1064,7 @@
   }
   checkDailyStreakAndReset();
 
-  // ---------- 3D ПЕЧЕНЬКА С ПОДДЕРЖКОЙ СКИНОВ (И НАДПИСЬЮ "ОРЕО" НА РУССКОМ) ----------
+  // ---------- 3D ПЕЧЕНЬКА С ПОДДЕРЖКОЙ СКИНОВ (ОПТИМИЗИРОВАННЫЙ 60 FPS СТЕК) ----------
   const SHUSHIK_SKIN_TEXTURES = [
     'assets/skins/shushik_tap_cookie.png',
     'assets/skins/shushik_tap_cookie_sidewall.png',
@@ -1074,23 +1072,75 @@
     'assets/skins/shushik_badge_star.png',
     'assets/skins/shushik_token_chip.png'
   ];
+  let _shushikTopDataUrl = 'assets/skins/shushik_tap_cookie.png';
+
+  function prescaleTextureToWebp(img, size, isRimStrip, coreColor) {
+    try {
+      const cvs = document.createElement('canvas');
+      cvs.width = size;
+      cvs.height = size;
+      const ctx = cvs.getContext('2d');
+      if (!ctx) return '';
+      if (isRimStrip) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2);
+        ctx.clip();
+        const stripH = Math.max(24, Math.round(size * 0.22));
+        for (let y = 0; y < size; y += stripH) {
+          ctx.drawImage(img, 0, y, size, stripH + 1);
+        }
+        const grad = ctx.createRadialGradient(size / 2, size * 0.44, size * 0.08, size / 2, size / 2, size * 0.48);
+        grad.addColorStop(0, coreColor);
+        grad.addColorStop(0.68, coreColor);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, size, size);
+        ctx.restore();
+      } else {
+        ctx.drawImage(img, 0, 0, size, size);
+      }
+      return cvs.toDataURL('image/webp', 0.85);
+    } catch (_) {
+      return '';
+    }
+  }
+
   const _preloadedSkinImages = SHUSHIK_SKIN_TEXTURES.map(src => {
     const img = new Image();
     img.decoding = 'async';
+    img.onload = () => {
+      if (src.endsWith('shushik_tap_cookie.png')) {
+        const url = prescaleTextureToWebp(img, 420, false, '');
+        if (url) {
+          _shushikTopDataUrl = url;
+          const topImg = cookie.querySelector('.shushik-top-cookie-img');
+          if (topImg) topImg.src = url;
+        }
+      } else if (src.endsWith('shushik_tap_cookie_sidewall.png')) {
+        const url = prescaleTextureToWebp(img, 256, true, 'rgba(28, 12, 9, 0.92)');
+        if (url) cookie.style.setProperty('--shushik-sidewall-tex', `url("${url}")`);
+      } else if (src.endsWith('shushik_tap_cookie_interlayer.png')) {
+        const url = prescaleTextureToWebp(img, 256, true, 'rgba(110, 14, 28, 0.88)');
+        if (url) cookie.style.setProperty('--shushik-interlayer-tex', `url("${url}")`);
+      }
+    };
     img.src = src;
     return img;
   });
 
-  const STEP = 3;
-  const WAFER = 8;
-  const CREAM = 9;
+  // Стек из 9 композитных 3D-слоёв с увеличенным Z-шагом (сохраняет полную толщину печеньки при 60 FPS)
+  const STEP = 8.5;
+  const LOWER_WAFER = 2;
+  const CREAM = 3;
+  const UPPER_WAFER = 3;
   const waferEls = [];
   const creamEls = [];
   let topLayerEl = null;
 
   function makeTopSVG(sk) {
     if (sk && sk.id === 'shushik') {
-      return `<img class="shushik-top-cookie-img" src="assets/skins/shushik_tap_cookie.png" alt="Шушик" draggable="false">`;
+      return `<img class="shushik-top-cookie-img" src="${_shushikTopDataUrl}" alt="Шушик" draggable="false">`;
     }
     if (sk && sk.customSvg) return sk.customSvg;
     return `
@@ -1121,27 +1171,26 @@
   function slice(cls, z, html = '') {
     const d = document.createElement('div');
     d.className = 'layer ' + cls;
-    d.style.setProperty('--layer-z', `${z}px`);
     d.style.transform = `translateZ(${z}px)`;
     if (html) d.innerHTML = html;
     cookie.appendChild(d);
     return d;
   }
 
-  const totalZ = (WAFER * 2 + CREAM) * STEP;
+  const totalZ = (LOWER_WAFER + CREAM + UPPER_WAFER) * STEP;
   let z = -totalZ / 2;
-  const bottomEdgeEl = slice('wafer edge', z);
-  for (let i = 0; i < WAFER; i++, z += STEP) {
-    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1, zone: 'lower', bandIdx: i, bandLen: WAFER });
+  const bottomEdgeEl = slice('wafer edge', z - 2);
+  for (let i = 0; i < LOWER_WAFER; i++, z += STEP) {
+    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1, zone: 'lower' });
   }
   for (let i = 0; i < CREAM; i++, z += STEP) {
     const s = slice('cream' + (i % 2 ? ' mid' : ''), z);
     const defaultInset = (4.5 + Math.sin(i * 1.7) * 0.8) + '%';
     s.style.inset = defaultInset;
-    creamEls.push({ el: s, odd: i % 2 === 1, bandIdx: i, bandLen: CREAM, defaultInset });
+    creamEls.push({ el: s, odd: i % 2 === 1, defaultInset });
   }
-  for (let i = 0; i < WAFER; i++, z += STEP) {
-    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1, zone: 'upper', bandIdx: i, bandLen: WAFER });
+  for (let i = 0; i < UPPER_WAFER; i++, z += STEP) {
+    waferEls.push({ el: slice('wafer', z), odd: i % 2 === 1, zone: 'upper' });
   }
   topLayerEl = slice('top', z, makeTopSVG(SKINS[state.equippedSkin] || SKINS.classic));
   const specLayerEl = slice('spec-glare', z + .5, '');
@@ -1153,40 +1202,29 @@
     const isShushik = state.equippedSkin === 'shushik' || sk.id === 'shushik';
     stage.classList.toggle('skin-shushik-3d', isShushik);
     cookie.classList.toggle('skin-shushik-3d', isShushik);
+    bottomEdgeEl.classList.toggle('shushik-glow-base', isShushik);
 
     if (isShushik) {
-      bottomEdgeEl.style.background = "url('assets/skins/shushik_tap_cookie.png') center / 100% 100% no-repeat";
       waferEls.forEach(w => {
         w.el.style.background = '';
         w.el.classList.toggle('shushik-lower-rim', w.zone === 'lower');
         w.el.classList.toggle('shushik-upper-rim', w.zone === 'upper');
-        const yOff = ((w.bandIdx / Math.max(1, w.bandLen - 1)) * 22).toFixed(1);
-        w.el.style.backgroundSize = '100% 100%, 100% 28px';
-        w.el.style.backgroundPosition = `center center, calc(50% + var(--shushik-rim-x, 0px)) calc(100% + ${yOff}px)`;
       });
       creamEls.forEach(c => {
         c.el.style.background = '';
         c.el.style.inset = '2.2%';
         c.el.classList.add('shushik-ruby-interlayer');
-        const yOff = ((c.bandIdx / Math.max(1, c.bandLen - 1)) * 24).toFixed(1);
-        c.el.style.backgroundSize = '100% 100%, 100% 30px';
-        c.el.style.backgroundPosition = `center center, calc(50% + var(--shushik-rim-x, 0px)) calc(100% + ${yOff}px)`;
       });
       specLayerEl.style.background =
-        'radial-gradient(circle at 32% 24%, rgba(240, 234, 214, 0.18), rgba(237, 28, 36, 0.08) 42%, transparent 60%)';
+        'radial-gradient(circle at 32% 24%, rgba(240, 234, 214, 0.16), transparent 52%)';
     } else {
-      bottomEdgeEl.style.background = '';
       waferEls.forEach(w => {
         w.el.classList.remove('shushik-lower-rim', 'shushik-upper-rim');
-        w.el.style.backgroundSize = '';
-        w.el.style.backgroundPosition = '';
         w.el.style.background = w.odd ? sk.wafer1 : sk.wafer2;
       });
       creamEls.forEach(c => {
         c.el.classList.remove('shushik-ruby-interlayer');
         c.el.style.inset = c.defaultInset;
-        c.el.style.backgroundSize = '';
-        c.el.style.backgroundPosition = '';
         c.el.style.background = c.odd ? sk.cream2 : sk.cream1;
       });
       specLayerEl.style.background =
@@ -1224,14 +1262,9 @@
     const floatY = Math.sin(time * 1.6) * 8;
     const idleRX = Math.sin(time * 1.1) * 2.5;
     const idleRZ = Math.cos(time * .9) * 3;
-    const rotZ = spin.x + idleRZ;
     wrap.style.transform =
-      `translateY(${floatY + press.x * 14}px) scale(${scale.x}) ` +
-      `rotateX(${BASE_X + tiltX.x + idleRX}deg) rotateY(${tiltY.x}deg) rotateZ(${rotZ}deg)`;
-    if (state.equippedSkin === 'shushik') {
-      cookie.style.setProperty('--shushik-counter-z', `${(-rotZ).toFixed(2)}deg`);
-      cookie.style.setProperty('--shushik-rim-x', `${(rotZ * 2.8).toFixed(1)}px`);
-    }
+      `translate3d(0, ${floatY + press.x * 14}px, 0) scale(${scale.x}) ` +
+      `rotateX(${BASE_X + tiltX.x + idleRX}deg) rotateY(${tiltY.x}deg) rotateZ(${spin.x + idleRZ}deg)`;
     glow.style.opacity = .75 + Math.sin(time * 1.6) * .15 + Math.min(.5, Math.abs(scale.x - 1) * 4);
     requestAnimationFrame(frame);
   }
