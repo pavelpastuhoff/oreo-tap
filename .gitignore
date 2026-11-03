@@ -1,5 +1,4 @@
-# --- Локальные файлы с зашитыми токенами бота ---
-bot.py
+# --- Локальные директории с серверными функциями ---
 netlify/
 
 # --- Переменные окружения, токены и секреты ---
@@ -9,6 +8,9 @@ netlify/
 !.env.example
 
 # --- Приватные ключи и конфиги Firebase / Google Cloud ---
+*firebase*
+*secret*
+*token*
 *firebase-adminsdk*.json
 serviceAccount*.json
 service-account*.json
@@ -23,6 +25,10 @@ firebase-debug.log*
 *.p12
 *.pfx
 *.crt
+
+# --- Локальные выгрузки краш-логов и баг-репортов ---
+crashes_*.txt
+*crash_report*.txt
 
 # --- Системные папки Python, кэши и виртуальные окружения ---
 __pycache__/

@@ -272,15 +272,33 @@ def admin_home_kb(webapp_url: str) -> dict:
 
 
 def _resolve_bot_token() -> str:
-    env_tok = os.environ.get("BOT_TOKEN")
+    env_tok = os.environ.get("BOT_TOKEN", "").strip()
     if env_tok:
         return env_tok
     for mod_name in ("bot", "__main__"):
         mod = sys.modules.get(mod_name)
         tok = getattr(mod, "TOKEN", None) if mod else None
         if tok:
-            return tok
-    return "8607855282:AAHUDjxse-GuArMzqkljF12pq-oYD8uAIHs"
+            return str(tok).strip()
+    dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.isfile(dotenv_path):
+        try:
+            with open(dotenv_path, "r", encoding="utf-8") as f:
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    if line.startswith("export "):
+                        line = line[7:].strip()
+                    k, v = line.split("=", 1)
+                    if k.strip() == "BOT_TOKEN":
+                        v = v.strip()
+                        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                            v = v[1:-1]
+                        return v
+        except OSError:
+            pass
+    return ""
 
 
 def send_text_document(chat_id: int, filename: str, content_text: str, caption: str = "", reply_markup=None):
@@ -337,17 +355,33 @@ def _crash_matches_date(item: dict, date_filter: str) -> bool:
     return False
 
 
+def _extract_all_crash_reports(raw: dict) -> list:
+    """Распаковывает как вложенные узлы crash_reports/{date}/{userId}_{ts}, так и плоские записи."""
+    items = []
+    if not isinstance(raw, dict):
+        return items
+    for k, v in raw.items():
+        if not isinstance(v, dict):
+            continue
+        if "timestamp" in v or "userId" in v or "message" in v:
+            entry = dict(v)
+            entry.setdefault("id", str(k))
+            items.append(entry)
+        else:
+            for sub_k, sub_v in v.items():
+                if isinstance(sub_v, dict):
+                    entry = dict(sub_v)
+                    entry.setdefault("id", f"{k}/{sub_k}")
+                    entry.setdefault("date", str(k))
+                    items.append(entry)
+    return items
+
+
 def build_crash_report_txt(date_filter: str = "") -> tuple:
     """Формирует структурированный текстовый отчёт crashes_YYYY-MM-DD.txt для человека и ИИ-агента."""
     target_date = (date_filter or "").strip() or datetime.now().strftime("%Y-%m-%d")
     raw = fb_get("crash_reports") or {}
-    all_items = []
-    if isinstance(raw, dict):
-        for k, v in raw.items():
-            if isinstance(v, dict):
-                entry = dict(v)
-                entry.setdefault("id", str(k))
-                all_items.append(entry)
+    all_items = _extract_all_crash_reports(raw)
 
     filtered = [r for r in all_items if _crash_matches_date(r, target_date)]
     filtered.sort(key=lambda r: int(r.get("timestamp") or 0))
@@ -442,19 +476,38 @@ def build_crash_report_txt(date_filter: str = "") -> tuple:
         handle = f" (@{r['username']})" if r.get("username") else ""
         lines.append(f"Player      : ID={r.get('userId', 'anon')} | Name={r.get('userName', '—')}{handle}")
         lines.append(f"ActiveTab   : {r.get('activeTab', 'unknown')}")
+        if r.get("tag"):
+            lines.append(f"Report Tag  : {r.get('tag')}")
+        if r.get("comment"):
+            lines.append(f"User Comment: {r.get('comment')}")
         if r.get("source"):
             lines.append(f"Source      : {r.get('source')}")
         if r.get("userAgent"):
             lines.append(f"UserAgent   : {r.get('userAgent')}")
         lines.append(f"Message     : {r.get('message', '—')}")
+        if r.get("gameState"):
+            try:
+                lines.append(f"Game State  : {json.dumps(r.get('gameState'), ensure_ascii=False)}")
+            except Exception:
+                lines.append(f"Game State  : {r.get('gameState')}")
+        cap_errs = r.get("capturedErrors") or []
+        if isinstance(cap_errs, dict):
+            cap_errs = list(cap_errs.values())
+        if cap_errs:
+            lines.append(f"Captured Errors ({len(cap_errs)}):")
+            for e_i, ce in enumerate(cap_errs, 1):
+                if isinstance(ce, dict):
+                    lines.append(f"  {e_i}. [{ce.get('time', '')}] ({ce.get('type', 'err')}) {ce.get('message', '')}")
+                else:
+                    lines.append(f"  {e_i}. {ce}")
         lines.append("Stack Trace :")
         for sl in str(r.get("stack") or "—").splitlines():
             lines.append(f"  {sl}")
 
-        acts = r.get("recentActions") or []
+        acts = r.get("actionBreadcrumbLog") or r.get("recentActions") or []
         if isinstance(acts, dict):
             acts = list(acts.values())
-        lines.append(f"Recent User Actions ({len(acts)}):")
+        lines.append(f"Action Breadcrumb Log ({len(acts)}):")
         if not acts:
             lines.append("  (no recorded actions prior to error)")
         else:

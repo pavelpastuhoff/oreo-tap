@@ -86,15 +86,28 @@
   // ---------- FIREBASE REST + КЭШ ПАМЯТИ (0ms TAB SWITCH) + ONVALUE + RUNTRANSACTION ----------
   const _memCache = new Map();
 
+  function _shortFbPath(clean) {
+    return String(clean || '').slice(0, 56);
+  }
+
   async function fbGet(path, signal) {
     const clean = path.replace(/^\/+/, '');
+    const abortSig = (signal && typeof signal === 'object' && 'aborted' in signal) ? signal : undefined;
     try {
-      const r = await fetch(`${getDbUrl()}/${clean}.json`, { cache: 'no-store', signal });
-      if (!r.ok) return null;
+      const r = await fetch(`${getDbUrl()}/${clean}.json`, { cache: 'no-store', signal: abortSig });
+      if (!r.ok) {
+        if (!clean.startsWith('crash_reports')) pushTelemetryAction(`fb_get_err:${_shortFbPath(clean)}:${r.status}`);
+        return null;
+      }
       const val = await r.json();
       _memCache.set(clean, val);
       return val;
-    } catch (e) { return null; }
+    } catch (e) {
+      if (!(e && e.name === 'AbortError') && !clean.startsWith('crash_reports')) {
+        pushTelemetryAction(`fb_get_neterr:${_shortFbPath(clean)}`);
+      }
+      return null;
+    }
   }
   async function fbPut(path, data) {
     const clean = path.replace(/^\/+/, '');
@@ -103,8 +116,14 @@
       const r = await fetch(`${getDbUrl()}/${clean}.json`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
       });
+      if (!clean.startsWith('crash_reports')) {
+        pushTelemetryAction(`fb_put:${_shortFbPath(clean)}:${r.ok ? 'ok' : r.status}`);
+      }
       return r.ok ? await r.json() : null;
-    } catch (e) { return null; }
+    } catch (e) {
+      if (!clean.startsWith('crash_reports')) pushTelemetryAction(`fb_put_err:${_shortFbPath(clean)}`);
+      return null;
+    }
   }
   async function fbPatch(path, data) {
     const clean = path.replace(/^\/+/, '');
@@ -116,14 +135,21 @@
       const r = await fetch(`${getDbUrl()}/${clean}.json`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
       });
+      if (!clean.startsWith('crash_reports')) {
+        pushTelemetryAction(`fb_patch:${_shortFbPath(clean)}:${r.ok ? 'ok' : r.status}`);
+      }
       return r.ok ? await r.json() : null;
-    } catch (e) { return null; }
+    } catch (e) {
+      if (!clean.startsWith('crash_reports')) pushTelemetryAction(`fb_patch_err:${_shortFbPath(clean)}`);
+      return null;
+    }
   }
   async function fbDelete(path) {
     const clean = path.replace(/^\/+/, '');
     _memCache.delete(clean);
     try {
       await fetch(`${getDbUrl()}/${clean}.json`, { method: 'DELETE' });
+      pushTelemetryAction(`fb_del:${_shortFbPath(clean)}`);
     } catch (e) {}
   }
 
@@ -148,6 +174,7 @@
         if (putRes.ok) {
           const saved = await putRes.json();
           _memCache.set(cleanPath, saved);
+          pushTelemetryAction(`fb_tx:${_shortFbPath(cleanPath)}:ok`);
           return { committed: true, snapshot: saved };
         }
       } catch (e) {}
@@ -184,7 +211,11 @@
         if (!active) return;
         const j = JSON.stringify(data);
         if (j !== lastJson) {
+          const hadPrev = lastJson !== '';
           lastJson = j;
+          if (hadPrev && (clean.startsWith('poker_tables/') || clean.startsWith('duel_matches/'))) {
+            pushTelemetryAction(`fb_sync:${_shortFbPath(clean)}`);
+          }
           callback(data);
         }
       } catch (e) {} finally {
@@ -271,12 +302,14 @@
     return d;
   }
 
-  function cardHtml(code, isBig = false, isWin = false) {
-    if (!code || code === '??') return `<span class="bg-card back${isBig ? ' big' : ''}"></span>`;
+  function cardHtml(code, isBig = false, isWin = false, extraCls = '', extraAttr = '') {
+    const clsTail = `${isBig ? ' big' : ''}${isWin ? ' win' : ''}${extraCls ? ' ' + extraCls : ''}`;
+    const attrStr = extraAttr ? ` ${extraAttr}` : '';
+    if (!code || code === '??') return `<span class="bg-card back bg-card-back${clsTail}"${attrStr}></span>`;
     const r = code[0] === 'T' ? '10' : code[0];
     const s = code[1];
     const red = (s === 'h' || s === 'd') ? ' red' : '';
-    return `<span class="bg-card${red}${isBig ? ' big' : ''}${isWin ? ' win' : ''}"><b>${r}</b><i>${SUIT_SYM[s] || s}</i></span>`;
+    return `<span class="bg-card${red}${clsTail}"${attrStr}><b>${r}</b><i>${SUIT_SYM[s] || s}</i></span>`;
   }
 
   function eval5Cards(cards5) {
@@ -362,16 +395,37 @@
   let _subView = null; // null | { type: 'poker'|'chess', id: string }
   let _viewUnsubs = [];
   let _turnInterval = null;
+  let _livePokerState = null;
+  let _liveChessState = null;
 
   function ensureOverlay() {
     if (_overlay) return _overlay;
     const el = document.createElement('div');
     el.className = 'bg-overlay';
     el.id = 'birchOverlay';
+    const leafSpecs = [
+      { left: '6%',  dur: '15s', delay: '-2s',  dx: '34px',  sc: '0.85', op: '0.20' },
+      { left: '16%', dur: '18s', delay: '-9s',  dx: '-28px', sc: '1.05', op: '0.16' },
+      { left: '28%', dur: '13s', delay: '-5s',  dx: '40px',  sc: '0.76', op: '0.22' },
+      { left: '41%', dur: '17s', delay: '-12s', dx: '-36px', sc: '0.92', op: '0.15' },
+      { left: '54%', dur: '14s', delay: '-3s',  dx: '30px',  sc: '1.10', op: '0.19' },
+      { left: '67%', dur: '19s', delay: '-14s', dx: '-32px', sc: '0.80', op: '0.17' },
+      { left: '79%', dur: '16s', delay: '-7s',  dx: '26px',  sc: '0.96', op: '0.21' },
+      { left: '90%', dur: '13.5s', delay: '-11s', dx: '-38px', sc: '0.84', op: '0.18' }
+    ];
+    const leavesHtml = leafSpecs.map(l =>
+      `<span class="bg-birch-leaf" style="left:${l.left};--ldur:${l.dur};--ldelay:${l.delay};--ldx:${l.dx};--lsc:${l.sc};--lop:${l.op}"></span>`
+    ).join('');
+
     el.innerHTML = `
+      <div class="bg-forest-ambience" aria-hidden="true">
+        <div class="bg-bark-edge left"></div>
+        <div class="bg-bark-edge right"></div>
+        ${leavesHtml}
+      </div>
       <div class="bg-head">
         <button class="bg-back" id="bgBackBtn" hidden>←</button>
-        <div class="bg-title" id="bgTitle">🪵 Берёзовая Зона ОРЕО67</div>
+        <div class="bg-title" id="bgTitle">🌿 Берёзовая Роща ОРЕО67</div>
         <div class="bg-wallet" id="bgWallet">🪙 0 | 🪵 0</div>
         <button class="bg-close" id="bgCloseBtn">✕</button>
       </div>
@@ -446,6 +500,10 @@
   function renderActiveView() {
     clearViewWatchers();
     if (_turnInterval) { clearInterval(_turnInterval); _turnInterval = null; }
+    if (!_subView) {
+      _livePokerState = null;
+      _liveChessState = null;
+    }
     refreshHeaderWallet();
     const tabsEl = document.getElementById('bgTabs');
     const backBtn = document.getElementById('bgBackBtn');
@@ -487,17 +545,17 @@
     document.getElementById('bgTitle').textContent = '👑 Live Админ-консоль ОРЕО67';
     body.innerHTML = `
       <div class="bg-row" style="margin-bottom:10px">
-        <button class="bg-btn ${ _admSubTab === 'players' ? '' : 'ghost' }" id="admTabPlayers">👥 Live-редактор</button>
+        <button class="bg-btn ${ _admSubTab === 'players' ? 'green' : 'ghost' }" id="admTabPlayers">👥 Live-редактор</button>
         <button class="bg-btn ${ _admSubTab === 'skins' ? '' : 'ghost' }" id="admTabSkins">🎭 Скины</button>
         <button class="bg-btn ${ _admSubTab === 'tour' ? '' : 'ghost' }" id="admTabTour">🃏 Турниры и Банк</button>
         <button class="bg-btn ${ _admSubTab === 'crashes' ? 'red' : 'ghost' }" id="admTabCrashes">🧯 Краш-логи</button>
       </div>
       <div id="admSubBody"></div>
     `;
-    body.querySelector('#admTabPlayers').onclick = () => { _admSubTab = 'players'; renderAdminConsoleTab(body); };
-    body.querySelector('#admTabSkins').onclick = () => { _admSubTab = 'skins'; renderAdminConsoleTab(body); };
-    body.querySelector('#admTabTour').onclick = () => { _admSubTab = 'tour'; renderAdminConsoleTab(body); };
-    body.querySelector('#admTabCrashes').onclick = () => { _admSubTab = 'crashes'; renderAdminConsoleTab(body); };
+    body.querySelector('#admTabPlayers').onclick = () => { _admSubTab = 'players'; pushTelemetryAction('adm_sub:players'); renderAdminConsoleTab(body); };
+    body.querySelector('#admTabSkins').onclick = () => { _admSubTab = 'skins'; pushTelemetryAction('adm_sub:skins'); renderAdminConsoleTab(body); };
+    body.querySelector('#admTabTour').onclick = () => { _admSubTab = 'tour'; pushTelemetryAction('adm_sub:tour'); renderAdminConsoleTab(body); };
+    body.querySelector('#admTabCrashes').onclick = () => { _admSubTab = 'crashes'; pushTelemetryAction('adm_sub:crashes'); renderAdminConsoleTab(body); };
 
     const sub = body.querySelector('#admSubBody');
     if (_admSubTab === 'players') renderAdminPlayersSub(sub);
@@ -1148,6 +1206,7 @@
     }
 
     toast(targetId && !vsBot ? '⚔️ Вызов отправлен в Telegram сопернику! Ставка в Эскроу.' : '⚔️ Стол дуэли создан!');
+    pushTelemetryAction(`duel_create:${game}(bet=${bet},bot=${vsBot ? 1 : 0})`);
     _subView = { type: game === 'chess' ? 'chess' : 'poker', id: cid, isTournament: false };
     renderActiveView();
   }
@@ -1172,6 +1231,7 @@
       return cur;
     });
     if (!tx.committed) return toast('⚠️ Не удалось принять вызов');
+    pushTelemetryAction(`duel_accept:${cid}(${ch.game})`);
 
     if (String(ch.challengerId) !== me.id) {
       const nextC = getCoins() - bet;
@@ -1398,9 +1458,16 @@
       }
     }
 
+    let lastLoggedChessStatus = '';
+
     function drawChess(m) {
       currentMatch = m;
+      _liveChessState = m ? Object.assign({ matchId }, m) : null;
       if (!m || !window.Chess) return;
+      if (m.status && m.status !== lastLoggedChessStatus) {
+        pushTelemetryAction(`chess_stage:${lastLoggedChessStatus || 'init'}->${m.status}`);
+        lastLoggedChessStatus = m.status;
+      }
       const chess = new window.Chess(m.fen);
       const amBlack = String(m.blackId) === me.id && String(m.whiteId) !== me.id;
       const myColor = amBlack ? 'b' : 'w';
@@ -1563,6 +1630,7 @@
         winner,
         reason
       };
+      pushTelemetryAction(`chess_move:${moveObj.color}:${moveObj.san}`);
       currentMatch = { ...currentMatch, ...patch };
       drawChess(currentMatch);
       await fbPatch(`duel_matches/${encodeURIComponent(matchId)}`, patch);
@@ -2114,6 +2182,7 @@
   }
 
   async function startTableNewHand(tid) {
+    pushTelemetryAction(`poker_deal:${tid}`);
     let knockouts = [];
     let duelWinnerId = '';
 
@@ -2220,6 +2289,7 @@
   }
 
   async function applyPokerPlayerAction(tid, actorId, action, raiseTo = 0) {
+    pushTelemetryAction(`poker_act:${actorId}:${action}${raiseTo ? ':' + raiseTo : ''}`);
     let knockouts = [];
     let duelWinnerId = '';
 
@@ -2378,14 +2448,14 @@
     }
   }
 
-  // Позиции 6 мест вокруг овального стола без перекрытий текста и борда
+  // Позиции 6 мест вокруг спила пня без перекрытий текста и борда
   const SEAT_COORDS = [
-    { left: '50%', top: '87%' },
-    { left: '15%', top: '69%' },
-    { left: '15%', top: '28%' },
-    { left: '50%', top: '11%' },
-    { left: '85%', top: '28%' },
-    { left: '85%', top: '69%' }
+    { left: '50%', top: '88%' },
+    { left: '14%', top: '69%' },
+    { left: '14%', top: '28%' },
+    { left: '50%', top: '10.5%' },
+    { left: '86%', top: '28%' },
+    { left: '86%', top: '69%' }
   ];
 
   function renderPokerTableView(body, tableId, isTournament = false) {
@@ -2393,15 +2463,24 @@
     const me = getMe();
     let currentTbl = null;
     let lastCtrlKey = '';
+    let lastTopBarKey = '';
+    let lastBoardDomSig = '';
+    let currentHandSig = '';
+    let lastLoggedStage = '';
+    const dealtHoleKeys = new Set();
+    const dealtBoardKeys = new Set();
+    let dealPulseTimer = null;
+    let woodSliceMode = localStorage.getItem('birch_stump_wood') === '1';
     let botLock = { key: '', ts: 0 };
     let watchdogBusy = false;
 
     body.innerHTML = `
       <div class="bg-poker-shell">
         <div class="bg-ptop" id="pokerTopBar"></div>
-        <div class="bg-table-wrap">
-          <div class="bg-table"></div>
+        <div class="bg-table-wrap${woodSliceMode ? ' wood-slice' : ''}" id="pokerTableWrap">
+          <div class="bg-table${woodSliceMode ? ' wood-slice' : ''}" id="pokerTableSurface"></div>
           <div class="bg-center">
+            <div class="bg-stump-slot" id="pokerStumpSlot" title="Щель раздачи пенька"></div>
             <div class="bg-pot" id="pokerPot">${stickSvg(true)} Банк: 0 🪵</div>
             <div class="bg-board" id="pokerBoard"></div>
             <div class="bg-stage" id="pokerStageTxt">ОЖИДАНИЕ</div>
@@ -2434,10 +2513,58 @@
       }, delay);
     }
 
+    // 60 FPS GPU-анимация вылета новых карт строго из щели пенька (.bg-stump-slot)
+    function animatePendingCardsFromStump() {
+      const pendingEls = body.querySelectorAll('.bg-card[data-deal-pending="1"]');
+      if (!pendingEls.length) return;
+      const slotEl = body.querySelector('#pokerStumpSlot');
+      const slotRect = slotEl ? slotEl.getBoundingClientRect() : null;
+      const slotCx = slotRect && slotRect.width > 0 ? (slotRect.left + slotRect.width / 2) : (window.innerWidth / 2);
+      const slotCy = slotRect && slotRect.height > 0 ? (slotRect.top + slotRect.height / 2) : (window.innerHeight * 0.34);
+
+      // Единый батч чтения геометрии до записи стилей (0 принудительных reflow во время анимации)
+      const measurements = Array.from(pendingEls).map(el => {
+        const r = el.getBoundingClientRect();
+        return {
+          el,
+          dx: Math.round(slotCx - (r.left + r.width / 2)),
+          dy: Math.round(slotCy - (r.top + r.height / 2))
+        };
+      });
+
+      measurements.forEach((item, idx) => {
+        const { el, dx, dy } = item;
+        el.removeAttribute('data-deal-pending');
+        el.style.setProperty('--deal-dx', `${dx}px`);
+        el.style.setProperty('--deal-dy', `${dy}px`);
+        el.style.setProperty('--deal-delay', `${idx * 105}ms`);
+        el.classList.add('bg-dealing');
+        el.addEventListener('animationend', () => {
+          el.classList.remove('bg-dealing');
+          el.style.removeProperty('--deal-dx');
+          el.style.removeProperty('--deal-dy');
+          el.style.removeProperty('--deal-delay');
+        }, { once: true });
+      });
+
+      if (slotEl) {
+        slotEl.classList.add('dealing');
+        if (dealPulseTimer) clearTimeout(dealPulseTimer);
+        dealPulseTimer = setTimeout(() => { slotEl.classList.remove('dealing'); }, measurements.length * 105 + 500);
+      }
+    }
+
     function drawTable(rawTbl) {
       if (!rawTbl) return;
       const tbl = normalizePokerTable({ ...rawTbl });
       currentTbl = tbl;
+      _livePokerState = Object.assign({ tableId, isTournament }, tbl);
+
+      if (tbl.stage && tbl.stage !== lastLoggedStage) {
+        pushTelemetryAction(`poker_stage:${lastLoggedStage || 'init'}->${tbl.stage}`);
+        lastLoggedStage = tbl.stage;
+      }
+
       const seats = tbl.seats;
       const mySeatIdx = seats.findIndex(s => String(s.id) === me.id);
       const lvl = Number(tbl.blindLevel) || 1;
@@ -2445,28 +2572,62 @@
       const isActiveHand = ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage);
       const isDuel = String(tableId).startsWith('duel_');
 
-      body.querySelector('#pokerTopBar').innerHTML = `
-        <span class="bg-chip gold">Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵</span>
-        <span class="bg-chip">За столом: ${seats.filter(s => !s.busted).length}/${seats.length}</span>
-        ${!isActiveHand && tbl.stage !== 'finished' ? `<button class="bg-btn sm green" id="pokerDealBtn">🃏 Новая раздача</button>` : ''}
-        ${!isDuel && !isTournament && !seats.some(s => s.isBot) && seats.length < 6 ? `<button class="bg-btn sm wood" id="pokerAddBotBtn">🤖 +Бот</button>` : ''}
-      `;
-      const dealBtn = body.querySelector('#pokerDealBtn');
-      if (dealBtn) dealBtn.onclick = () => startTableNewHand(tableId);
-      const addBotBtn = body.querySelector('#pokerAddBotBtn');
-      if (addBotBtn) addBotBtn.onclick = async () => { await seatBotAtPokerTable(tableId, 20000); await startTableNewHand(tableId); };
+      // Определяем сигнатуру текущей раздачи, чтобы анимировать вылет карт ровно при их появлении
+      const hasAnyCards = seats.some(s => s.cards && s.cards.length > 0);
+      if (tbl.stage === 'waiting' || !hasAnyCards) {
+        currentHandSig = '';
+        dealtHoleKeys.clear();
+        dealtBoardKeys.clear();
+      } else {
+        const nextSig = seats.map(s => `${s.id}:${(s.cards || []).join('')}`).join('|');
+        if (nextSig !== currentHandSig) {
+          currentHandSig = nextSig;
+          dealtHoleKeys.clear();
+          dealtBoardKeys.clear();
+        }
+      }
 
-      const boardEl = body.querySelector('#pokerBoard');
-      const boardCards = tbl.board;
-      boardEl.innerHTML = [0, 1, 2, 3, 4].map(i => (
-        boardCards[i] ? cardHtml(boardCards[i], true) : `<span class="bg-card slot big"></span>`
-      )).join('');
+      const topBarKey = `${lvl}:${seats.filter(s => !s.busted).length}:${seats.length}:${isActiveHand ? 1 : 0}:${tbl.stage}:${seats.some(s => s.isBot) ? 1 : 0}:${woodSliceMode ? 1 : 0}`;
+      if (topBarKey !== lastTopBarKey) {
+        lastTopBarKey = topBarKey;
+        body.querySelector('#pokerTopBar').innerHTML = `
+          <span class="bg-chip gold">Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵</span>
+          <span class="bg-chip">За столом: ${seats.filter(s => !s.busted).length}/${seats.length}</span>
+          <div class="bg-row" style="gap:5px">
+            <button class="bg-btn sm ghost" id="pokerSurfaceBtn" title="Сменить текстуру стола">${woodSliceMode ? '🌿 Сукно' : '🪵 Спил'}</button>
+            ${!isActiveHand && tbl.stage !== 'finished' ? `<button class="bg-btn sm green" id="pokerDealBtn">🃏 Раздать карты</button>` : ''}
+            ${!isDuel && !isTournament && !seats.some(s => s.isBot) && seats.length < 6 ? `<button class="bg-btn sm wood" id="pokerAddBotBtn">🤖 +Бот</button>` : ''}
+          </div>
+        `;
+        const surfBtn = body.querySelector('#pokerSurfaceBtn');
+        if (surfBtn) {
+          surfBtn.onclick = () => {
+            woodSliceMode = !woodSliceMode;
+            try { localStorage.setItem('birch_stump_wood', woodSliceMode ? '1' : '0'); } catch (e) {}
+            const tSurf = body.querySelector('#pokerTableSurface');
+            const tWrap = body.querySelector('#pokerTableWrap');
+            if (tSurf) tSurf.classList.toggle('wood-slice', woodSliceMode);
+            if (tWrap) tWrap.classList.toggle('wood-slice', woodSliceMode);
+            lastTopBarKey = '';
+            drawTable(currentTbl);
+          };
+        }
+        const dealBtn = body.querySelector('#pokerDealBtn');
+        if (dealBtn) dealBtn.onclick = () => startTableNewHand(tableId);
+        const addBotBtn = body.querySelector('#pokerAddBotBtn');
+        if (addBotBtn) addBotBtn.onclick = async () => { await seatBotAtPokerTable(tableId, 20000); await startTableNewHand(tableId); };
+      }
 
       body.querySelector('#pokerPot').innerHTML = `${stickSvg(true)} Банк: ${fmt(tbl.pot)} 🪵`;
       body.querySelector('#pokerStageTxt').textContent = tbl.winnerBanner || (STAGE_LABELS[tbl.stage] || String(tbl.stage || 'ОЖИДАНИЕ').toUpperCase());
 
+      // Обновляем места игроков без пересоздания DOM-узлов карт, чтобы анимация раздачи шла 60 FPS без прерываний
       const seatsLayer = body.querySelector('#pokerSeatsLayer');
-      seatsLayer.innerHTML = seats.map((s, idx) => {
+      while (seatsLayer.children.length > seats.length) {
+        seatsLayer.removeChild(seatsLayer.lastElementChild);
+      }
+
+      seats.forEach((s, idx) => {
         let coordIdx;
         if (seats.length === 2) {
           const isHeroSlot = mySeatIdx >= 0 ? idx === mySeatIdx : idx === 0;
@@ -2478,30 +2639,87 @@
         const isTurn = isActiveHand && tbl.turnIdx === idx;
         const isMe = String(s.id) === me.id;
         const showCards = isMe || tbl.stage === 'showdown' || tbl.stage === 'finished';
-        const cards = s.cards.length
-          ? s.cards.map(c => cardHtml(showCards ? c : '??')).join('')
-          : '';
         const remRatio = isTurn ? Math.max(0.05, Math.min(1, ((tbl.turnDeadline || 0) - Date.now()) / TURN_TIMEOUT_MS)) : 1;
 
-        return `
-          <div class="bg-seat ${isTurn ? 'turn' : ''} ${isMe ? 'me' : ''} ${s.folded ? 'folded' : ''} ${s.busted ? 'busted' : ''}"
-               style="left:${pos.left};top:${pos.top}" data-seatidx="${idx}">
-            <div class="bg-scards">${cards}</div>
+        let seatEl = seatsLayer.children[idx];
+        if (!seatEl) {
+          seatEl = document.createElement('div');
+          seatEl.innerHTML = `
+            <div class="bg-scards"></div>
             <div class="bg-seat-box">
-              <div class="bg-ava" style="--p:${remRatio.toFixed(2)}">
-                ${s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`}
-              </div>
+              <div class="bg-ava"></div>
               <div class="bg-sinfo">
-                <div class="bg-sname">${esc(s.name)}</div>
-                <div class="bg-sstack">${stickSvg(false)} ${fmt(s.stack)}</div>
-                <div class="bg-sstatus">${esc(s.status || '')}</div>
+                <div class="bg-sname"></div>
+                <div class="bg-sstack"></div>
+                <div class="bg-sstatus"></div>
               </div>
-              ${tbl.dealerIdx === idx ? '<i class="bg-dealer">D</i>' : ''}
+              <i class="bg-dealer" hidden>D</i>
             </div>
-            ${s.bet > 0 ? `<div class="bg-sbet">${stickSvg(false)} ${fmt(s.bet)}</div>` : ''}
-          </div>
-        `;
-      }).join('');
+            <div class="bg-sbet-wrap" style="text-align:center"></div>
+          `;
+          seatsLayer.appendChild(seatEl);
+        }
+
+        seatEl.className = `bg-seat${isTurn ? ' turn' : ''}${isMe ? ' me' : ''}${s.folded ? ' folded' : ''}${s.busted ? ' busted' : ''}`;
+        seatEl.style.left = pos.left;
+        seatEl.style.top = pos.top;
+        seatEl.setAttribute('data-seatidx', String(idx));
+
+        const cardsDomSig = `${currentHandSig}|${showCards ? 'open:' + s.cards.join(',') : 'back:' + s.cards.length}`;
+        if (seatEl.getAttribute('data-cards-sig') !== cardsDomSig) {
+          seatEl.setAttribute('data-cards-sig', cardsDomSig);
+          const scardsEl = seatEl.querySelector('.bg-scards');
+          scardsEl.innerHTML = s.cards.length
+            ? s.cards.map((c, ci) => {
+                const hKey = `${currentHandSig}:h:${s.id}:${ci}`;
+                if (currentHandSig && !dealtHoleKeys.has(hKey)) {
+                  dealtHoleKeys.add(hKey);
+                  return cardHtml(showCards ? c : '??', false, false, '', 'data-deal-pending="1"');
+                }
+                if (showCards && !isMe) {
+                  return cardHtml(c, false, false, 'bg-reveal');
+                }
+                return cardHtml(showCards ? c : '??');
+              }).join('')
+            : '';
+        }
+
+        const avaEl = seatEl.querySelector('.bg-ava');
+        avaEl.style.setProperty('--p', remRatio.toFixed(2));
+        const avaSig = s.photo ? `img:${s.photo}` : `txt:${(s.name || 'И')[0]}`;
+        if (avaEl.getAttribute('data-avasig') !== avaSig) {
+          avaEl.setAttribute('data-avasig', avaSig);
+          avaEl.innerHTML = s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`;
+        }
+
+        seatEl.querySelector('.bg-sname').textContent = s.name || '';
+        seatEl.querySelector('.bg-sstack').innerHTML = `${stickSvg(false)} ${fmt(s.stack)}`;
+        seatEl.querySelector('.bg-sstatus').textContent = s.status || '';
+        const dEl = seatEl.querySelector('.bg-dealer');
+        if (dEl) dEl.hidden = tbl.dealerIdx !== idx;
+
+        const betWrap = seatEl.querySelector('.bg-sbet-wrap');
+        betWrap.innerHTML = s.bet > 0 ? `<div class="bg-sbet">${stickSvg(false)} ${fmt(s.bet)}</div>` : '';
+      });
+
+      // Обновляем общие карты борда (флоп, тёрн, ривер) только при изменении борда
+      const boardEl = body.querySelector('#pokerBoard');
+      const boardCards = tbl.board;
+      const boardDomSig = `${currentHandSig}|${boardCards.join(',')}`;
+      if (boardDomSig !== lastBoardDomSig) {
+        lastBoardDomSig = boardDomSig;
+        boardEl.innerHTML = [0, 1, 2, 3, 4].map(i => {
+          const code = boardCards[i];
+          if (!code) return `<span class="bg-card slot big"></span>`;
+          const bKey = `${currentHandSig}:b:${i}:${code}`;
+          const isNewBoardCard = Boolean(currentHandSig && !dealtBoardKeys.has(bKey));
+          if (isNewBoardCard) dealtBoardKeys.add(bKey);
+          return cardHtml(code, true, false, '', isNewBoardCard ? 'data-deal-pending="1"' : '');
+        }).join('');
+      }
+
+      // Запускаем плавный вылет всех новых карт (карманных и общих) из щели пенька
+      animatePendingCardsFromStump();
 
       const ctrl = body.querySelector('#pokerControls');
       const isMyTurn = mySeatIdx >= 0 && isActiveHand && tbl.turnIdx === mySeatIdx;
@@ -3239,11 +3457,16 @@
     toast(`🎭 Скин «${sk.name}» выдан игроку ${uid} + отправлен пуш в Telegram!`);
   }
 
-  // ==================== 7. СКВОЗНАЯ СИСТЕМА КРАШ-ЛОГОВ И TELEMETRY ====================
-  const MAX_RECENT_ACTIONS = 15;
-  const _recentActions = [];
+  // ==================== 7. ПОСТОЯННЫЙ БАГ-РЕПОРТ, ЧЁРНЫЙ ЯЩИК (25 ДЕЙСТВИЙ) И TELEMETRY ====================
+  const MAX_RECENT_ACTIONS = 25;
+  const actionBreadcrumbLog = [];
+  const _recentActions = actionBreadcrumbLog;
+  const _capturedErrors = [];
   let _telemetryInitialized = false;
   let _crashBannerEl = null;
+  let _bugFabEl = null;
+  let _bugPopoverEl = null;
+  let _selectedBugTag = '';
   let _pendingCrash = null;
   let _lastCapturedSig = '';
   let _lastCapturedTs = 0;
@@ -3265,7 +3488,7 @@
       }
       return _activeTab || 'tournament';
     }
-    const mainActive = document.querySelector('.nav-item.active, .tab-btn.active, [data-screen].active');
+    const mainActive = document.querySelector('.nav-btn.active, .nav-item.active, .tab-btn.active, [data-screen].active');
     if (mainActive) {
       const label = (mainActive.getAttribute('data-tab') || mainActive.getAttribute('data-screen') || mainActive.textContent || '').trim().slice(0, 32);
       if (label) return `main:${label}`;
@@ -3277,10 +3500,241 @@
     if (!actionLabel) return;
     const now = Date.now();
     const timeStr = new Date(now).toISOString().slice(11, 23);
-    _recentActions.push({ ts: now, time: timeStr, action: String(actionLabel).slice(0, 120) });
-    if (_recentActions.length > MAX_RECENT_ACTIONS) {
-      _recentActions.shift();
+    actionBreadcrumbLog.push({ ts: now, time: timeStr, action: String(actionLabel).slice(0, 140) });
+    if (actionBreadcrumbLog.length > MAX_RECENT_ACTIONS) {
+      actionBreadcrumbLog.shift();
     }
+  }
+
+  function recordCapturedErrorItem(message, stack, source) {
+    const now = Date.now();
+    const entry = {
+      ts: now,
+      time: new Date(now).toISOString().slice(11, 23),
+      source: String(source || '').slice(0, 100),
+      message: String(message || 'Error').slice(0, 400),
+      stack: String(stack || message || '').slice(0, 2000)
+    };
+    _capturedErrors.push(entry);
+    if (_capturedErrors.length > 20) _capturedErrors.shift();
+    pushTelemetryAction(`err:${entry.message.slice(0, 85)}`);
+    if (_bugFabEl) _bugFabEl.classList.add('has-error');
+  }
+
+  function collectGameStateSnapshot() {
+    const me = getMe();
+    const overlayOpen = Boolean(_overlay && _overlay.classList.contains('show'));
+    const snap = {
+      playerId: String(me.id || 'anon'),
+      overlayOpen,
+      activeScreen: getCurrentActiveScreen(),
+      activeTab: _activeTab || 'tournament',
+      subView: _subView ? { type: _subView.type, id: _subView.id, isTournament: Boolean(_subView.isTournament) } : null,
+      wallet: {
+        coins: getCoins(),
+        gems: getGems(),
+        sticks: getSticks(),
+        choppedLogs: getChoppedLogs(),
+        equippedSkin: getLocalState().equippedSkin || 'classic'
+      }
+    };
+
+    const p = _livePokerState || ((_subView && _subView.type === 'poker' && _memCache.get(`poker_tables/${encodeURIComponent(_subView.id)}`)) || null);
+    if (p && typeof p === 'object') {
+      snap.poker = {
+        tableId: p.tableId || p.id || (_subView && _subView.id) || '',
+        stage: p.stage || 'unknown',
+        blindLevel: p.blindLevel || 1,
+        pot: Number(p.pot) || 0,
+        currentBet: Number(p.currentBet) || 0,
+        dealerIdx: Number(p.dealerIdx) || 0,
+        turnIdx: Number(p.turnIdx) || 0,
+        turnDeadlineRemMs: p.turnDeadline ? Math.round(Number(p.turnDeadline) - Date.now()) : 0,
+        idleMs: p.updatedAt ? Math.round(Date.now() - Number(p.updatedAt)) : 0,
+        board: toArr(p.board),
+        winnerBanner: p.winnerBanner || '',
+        seats: toArr(p.seats).map(s => ({
+          id: s.id,
+          name: s.name,
+          isBot: Boolean(s.isBot),
+          stack: s.stack,
+          bet: s.bet,
+          totalBet: s.totalBet,
+          folded: Boolean(s.folded),
+          allIn: Boolean(s.allIn),
+          busted: Boolean(s.busted),
+          acted: Boolean(s.acted),
+          status: s.status || '',
+          cardsCount: toArr(s.cards).length
+        }))
+      };
+    }
+
+    const c = _liveChessState || ((_subView && _subView.type === 'chess' && _memCache.get(`duel_matches/${encodeURIComponent(_subView.id)}`)) || null);
+    if (c && typeof c === 'object') {
+      snap.chess = {
+        matchId: c.matchId || c.id || (_subView && _subView.id) || '',
+        status: c.status || 'unknown',
+        turn: c.turn || 'w',
+        vsBot: Boolean(c.vsBot),
+        pot: Number(c.pot) || 0,
+        fen: c.fen || '',
+        movesCount: toArr(c.history).length,
+        lastFrom: c.lastFrom || '',
+        lastTo: c.lastTo || '',
+        wTime: c.wTime,
+        bTime: c.bTime,
+        idleMs: c.lastMoveTs ? Math.round(Date.now() - Number(c.lastMoveTs)) : 0,
+        winner: c.winner || '',
+        reason: c.reason || ''
+      };
+    }
+
+    return snap;
+  }
+
+  function ensureBugReportWidget() {
+    if (_bugFabEl && _bugPopoverEl) return;
+    if (!document.body) return;
+
+    const fab = document.createElement('button');
+    fab.type = 'button';
+    fab.className = 'bg-bug-fab';
+    fab.id = 'bgBugFab';
+    fab.title = 'Сообщить об ошибке или зависании';
+    fab.innerHTML = `<span class="bg-bug-dot"></span><span>🐞 Баг</span>`;
+    if (_capturedErrors.length > 0) fab.classList.add('has-error');
+
+    const pop = document.createElement('div');
+    pop.className = 'bg-bug-popover';
+    pop.id = 'bgBugPopover';
+    pop.innerHTML = `
+      <div class="bg-bug-head">
+        <b>🐞 Сообщить об ошибке</b>
+        <button type="button" class="bg-bug-x" id="bgBugCloseBtn" aria-label="Закрыть">✕</button>
+      </div>
+      <div class="bg-bug-tags" id="bgBugTags">
+        <button type="button" class="bg-bug-tag" data-bugtag="Зависла раздача">🃏 Зависла раздача</button>
+        <button type="button" class="bg-bug-tag" data-bugtag="Тормозит бот">🤖 Тормозит бот</button>
+        <button type="button" class="bg-bug-tag" data-bugtag="Съехал дизайн">🎨 Съехал дизайн</button>
+      </div>
+      <textarea class="bg-bug-note" id="bgBugNote" maxlength="320" placeholder="Короткий комментарий (по желанию)..."></textarea>
+      <div class="bg-bug-meta" id="bgBugMeta">
+        <span>Лог: 0/25 действий</span>
+        <span>Снимок готов</span>
+      </div>
+      <button type="button" class="bg-bug-send" id="bgBugSendBtn">🚀 Отправить отчёт</button>
+    `;
+
+    document.body.appendChild(pop);
+    document.body.appendChild(fab);
+    _bugFabEl = fab;
+    _bugPopoverEl = pop;
+
+    const refreshBugMeta = () => {
+      const meta = pop.querySelector('#bgBugMeta');
+      if (!meta) return;
+      const scr = getCurrentActiveScreen();
+      meta.innerHTML = `<span>Лог: <b>${actionBreadcrumbLog.length}</b>/25 • Ошибок: <b>${_capturedErrors.length}</b></span><span>${esc(scr.slice(0, 22))}</span>`;
+    };
+
+    const closeBugPopover = () => {
+      pop.classList.remove('show');
+      fab.classList.remove('active');
+    };
+
+    fab.onclick = (e) => {
+      e.stopPropagation();
+      const willOpen = !pop.classList.contains('show');
+      if (willOpen) {
+        refreshBugMeta();
+        pop.classList.add('show');
+        fab.classList.add('active');
+      } else {
+        closeBugPopover();
+      }
+    };
+
+    pop.querySelector('#bgBugCloseBtn').onclick = () => closeBugPopover();
+
+    pop.querySelectorAll('[data-bugtag]').forEach(tBtn => {
+      tBtn.onclick = () => {
+        const tg = tBtn.getAttribute('data-bugtag') || '';
+        _selectedBugTag = (_selectedBugTag === tg) ? '' : tg;
+        pop.querySelectorAll('[data-bugtag]').forEach(b => {
+          b.classList.toggle('active', b.getAttribute('data-bugtag') === _selectedBugTag);
+        });
+      };
+    });
+
+    document.addEventListener('click', (ev) => {
+      if (!pop.classList.contains('show')) return;
+      const target = ev.target;
+      if (target && (pop.contains(target) || fab.contains(target))) return;
+      closeBugPopover();
+    }, { passive: true });
+
+    pop.querySelector('#bgBugSendBtn').onclick = async () => {
+      const sendBtn = pop.querySelector('#bgBugSendBtn');
+      const noteEl = pop.querySelector('#bgBugNote');
+      const comment = (noteEl && noteEl.value ? noteEl.value.trim() : '').slice(0, 320);
+      const tag = _selectedBugTag || 'Без тега';
+      const now = Date.now();
+      const activeScreen = getCurrentActiveScreen();
+      const gameState = collectGameStateSnapshot();
+      const lastErr = _capturedErrors.length ? _capturedErrors[_capturedErrors.length - 1] : null;
+
+      const summaryParts = [`[Баг-репорт: ${tag}]`];
+      if (comment) summaryParts.push(comment);
+      else if (lastErr) summaryParts.push(lastErr.message);
+      else summaryParts.push(`Экран: ${activeScreen}`);
+
+      const diagStackLines = [];
+      if (comment) diagStackLines.push(`User Comment: ${comment}`);
+      diagStackLines.push(`Tag: ${tag} | Screen: ${activeScreen}`);
+      diagStackLines.push(`GameState Snapshot: ${JSON.stringify(gameState)}`);
+      if (_capturedErrors.length) {
+        diagStackLines.push(`Captured Errors (${_capturedErrors.length}):`);
+        _capturedErrors.slice(-5).forEach((ce, idx) => {
+          diagStackLines.push(`  #${idx + 1} [${ce.time}] (${ce.source}) ${ce.message}`);
+          if (ce.stack && ce.stack !== ce.message) diagStackLines.push(`    ${ce.stack.split('\n').slice(0, 4).join(' | ')}`);
+        });
+      }
+
+      sendBtn.disabled = true;
+      sendBtn.textContent = '⏳ Упаковка и отправка...';
+      try {
+        await submitCrashReportToFirebase({
+          reportType: 'manual_bug_report',
+          tag,
+          comment,
+          activeTab: activeScreen,
+          message: summaryParts.join(' '),
+          stack: diagStackLines.join('\n'),
+          source: 'bug_fab_widget',
+          timestamp: now,
+          gameState,
+          actionBreadcrumbLog: [...actionBreadcrumbLog],
+          recentActions: [...actionBreadcrumbLog],
+          capturedErrors: [..._capturedErrors]
+        });
+        sendBtn.textContent = '✅ Отчёт отправлен!';
+        fab.classList.remove('has-error');
+        if (noteEl) noteEl.value = '';
+        _selectedBugTag = '';
+        pop.querySelectorAll('[data-bugtag]').forEach(b => b.classList.remove('active'));
+        toast('✅ Отчёт и чёрный ящик (25 действий) отправлены админу!');
+        setTimeout(() => {
+          closeBugPopover();
+          sendBtn.disabled = false;
+          sendBtn.textContent = '🚀 Отправить отчёт';
+        }, 750);
+      } catch (err) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = '🚀 Отправить отчёт';
+        toast('⚠️ Ошибка сети при отправке репорта');
+      }
+    };
   }
 
   function ensureCrashBanner() {
@@ -3314,6 +3768,7 @@
       try {
         await submitCrashReportToFirebase(_pendingCrash);
         sendBtn.textContent = '✅ Лог отправлен';
+        if (_bugFabEl) _bugFabEl.classList.remove('has-error');
         toast('✅ Отчёт об ошибке отправлен в систему телеметрии!');
         setTimeout(() => {
           bar.classList.remove('show');
@@ -3334,25 +3789,57 @@
   async function submitCrashReportToFirebase(crashData) {
     const me = getMe();
     const ts = Number(crashData.timestamp) || Date.now();
+    const dateStr = formatLocalYmd(ts);
     const safeUid = String(me.id || 'anon').replace(/[.#$/[\]\s]/g, '_');
     const nodeKey = `${safeUid}_${ts}`;
+    const breadcrumbs = Array.isArray(crashData.actionBreadcrumbLog)
+      ? crashData.actionBreadcrumbLog
+      : (Array.isArray(crashData.recentActions) ? crashData.recentActions : [...actionBreadcrumbLog]);
+    const gameState = crashData.gameState || collectGameStateSnapshot();
+
     const payload = {
       id: nodeKey,
+      reportType: String(crashData.reportType || 'auto_crash'),
+      tag: String(crashData.tag || 'Авто-краш'),
+      comment: String(crashData.comment || ''),
       userId: String(me.id || 'anon'),
       userName: String(me.name || 'Тапер'),
       username: String(me.username || ''),
       activeTab: String(crashData.activeTab || getCurrentActiveScreen()),
       message: String(crashData.message || 'Unknown Error').slice(0, 1000),
-      stack: String(crashData.stack || 'No stack trace available').slice(0, 6000),
+      stack: String(crashData.stack || 'No stack trace available').slice(0, 6500),
       source: String(crashData.source || ''),
       timestamp: ts,
       isoTime: new Date(ts).toISOString(),
-      date: formatLocalYmd(ts),
-      recentActions: Array.isArray(crashData.recentActions) ? crashData.recentActions : [..._recentActions],
+      date: dateStr,
+      gameState,
+      actionBreadcrumbLog: breadcrumbs,
+      recentActions: breadcrumbs,
+      capturedErrors: Array.isArray(crashData.capturedErrors) ? crashData.capturedErrors : [..._capturedErrors],
       userAgent: String(navigator.userAgent || '').slice(0, 260)
     };
-    await fbPut(`crash_reports/${encodeURIComponent(nodeKey)}`, payload);
+    await fbPut(`crash_reports/${encodeURIComponent(dateStr)}/${encodeURIComponent(nodeKey)}`, payload);
     return payload;
+  }
+
+  // Универсальная распаковка crash_reports/{date}/{userId}_{timestamp} + плоских старых записей
+  function extractAllCrashReports(raw) {
+    const out = [];
+    if (!raw || typeof raw !== 'object') return out;
+    for (const [k, v] of Object.entries(raw)) {
+      if (!v || typeof v !== 'object') continue;
+      const isDirectEntry = ('timestamp' in v) || ('userId' in v) || ('message' in v);
+      if (isDirectEntry) {
+        out.push({ id: k, ...v });
+      } else {
+        for (const [subKey, subVal] of Object.entries(v)) {
+          if (subVal && typeof subVal === 'object') {
+            out.push({ id: subKey, date: subVal.date || k, ...subVal });
+          }
+        }
+      }
+    }
+    return out;
   }
 
   function handleCapturedError(message, stack, source) {
@@ -3371,13 +3858,20 @@
     _lastCapturedSig = sig;
     _lastCapturedTs = now;
 
+    recordCapturedErrorItem(msgStr, stack, source);
+
     _pendingCrash = {
+      reportType: 'auto_crash',
+      tag: 'Авто-краш',
       activeTab: getCurrentActiveScreen(),
       message: msgStr,
       stack: String(stack || msgStr),
       source: String(source || ''),
       timestamp: now,
-      recentActions: [..._recentActions]
+      gameState: collectGameStateSnapshot(),
+      actionBreadcrumbLog: [...actionBreadcrumbLog],
+      recentActions: [...actionBreadcrumbLog],
+      capturedErrors: [..._capturedErrors]
     };
 
     const showBanner = () => {
@@ -3439,13 +3933,43 @@
       handleCapturedError(msg, stack, 'unhandledrejection');
     });
 
-    // Невесомый пассивный сборщик действий: полностью игнорирует частые тапы по монете/печеньке
+    // Перехват console.error в чёрный ящик без рекурсии и без всплывающего баннера
+    if (window.console && typeof window.console.error === 'function' && !window.console.error.__birchWrapped) {
+      const origConsoleError = window.console.error.bind(window.console);
+      let inConsoleCapture = false;
+      const wrappedError = function (...args) {
+        if (!inConsoleCapture) {
+          inConsoleCapture = true;
+          try {
+            const msg = args.map(a => {
+              if (a instanceof Error) return a.message || String(a);
+              if (typeof a === 'object' && a !== null) {
+                try { return JSON.stringify(a); } catch (e) { return String(a); }
+              }
+              return String(a);
+            }).join(' ').trim();
+            if (msg && !msg.includes('AbortError')) {
+              const errArg = args.find(a => a instanceof Error);
+              recordCapturedErrorItem(msg, (errArg && errArg.stack) || msg, 'console.error');
+            }
+          } catch (e) {} finally {
+            inConsoleCapture = false;
+          }
+        }
+        return origConsoleError(...args);
+      };
+      wrappedError.__birchWrapped = true;
+      window.console.error = wrappedError;
+    }
+
+    // Невесомый пассивный сборщик действий (кольцевой буфер 25 шагов): игнорирует тапы по печеньке и сам виджет бага
     document.addEventListener('click', (e) => {
       const now = Date.now();
-      if (now - _lastBreadcrumbTs < 180) return;
+      if (now - _lastBreadcrumbTs < 140) return;
       const t = e.target;
       if (!t || typeof t.closest !== 'function') return;
-      const interactive = t.closest('#birchOverlay button, #birchOverlay [data-sq], #birchZoneBtn, #birchAdminBtn, .nav-item, .tab-btn');
+      if (t.closest('#bgBugFab, #bgBugPopover')) return;
+      const interactive = t.closest('#birchOverlay button, #birchOverlay [data-sq], #birchZoneBtn, #birchAdminBtn, .nav-btn, .nav-item, .tab-btn, .round-btn, .pill-btn');
       if (!interactive) return;
       _lastBreadcrumbTs = now;
       const sq = interactive.getAttribute('data-sq');
@@ -3510,15 +4034,15 @@
     const groups = [...groupsMap.values()].sort((a, b) => b.count - a.count);
     const lines = [];
     lines.push('================================================================================');
-    lines.push(`OREO67 — CRASH TELEMETRY & DIAGNOSTIC REPORT (${dateLabel})`);
+    lines.push(`OREO67 — CRASH TELEMETRY & BUG DIAGNOSTIC REPORT (${dateLabel})`);
     lines.push(`Generated At : ${new Date().toISOString()}`);
-    lines.push('Format       : Human-Readable & AI-Agent Structured Log v1.0');
+    lines.push('Format       : Human-Readable & AI-Agent Structured Log v2.0 (25-Action BlackBox)');
     lines.push('================================================================================');
     lines.push('');
     lines.push('[SECTION 1: EXECUTIVE SUMMARY]');
     lines.push(`- Filter Period          : ${dateLabel}`);
-    lines.push(`- Total Crash Events     : ${sorted.length}`);
-    lines.push(`- Unique Error Groups    : ${groups.length}`);
+    lines.push(`- Total Reports / Events : ${sorted.length}`);
+    lines.push(`- Unique Issue Groups    : ${groups.length}`);
     lines.push(`- Affected Users Count   : ${uniqueUsers.size}`);
     if (uniqueUsers.size > 0) {
       const uList = [...uniqueUsers.entries()].map(([id, nm]) => `${id} (${nm})`).join(', ');
@@ -3528,40 +4052,54 @@
     lines.push(`- Breakdown by Screen    : ${tabSummary || 'none'}`);
     lines.push('');
 
-    lines.push('[SECTION 2: AGGREGATED ERROR SIGNATURES (RANKED BY FREQUENCY)]');
+    lines.push('[SECTION 2: AGGREGATED ERROR & BUG SIGNATURES (RANKED BY FREQUENCY)]');
     if (!groups.length) {
-      lines.push('No crashes recorded for the selected period.');
+      lines.push('No crashes or bug reports recorded for the selected period.');
     } else {
       groups.forEach((g, idx) => {
         const usersStr = [...g.users.entries()].map(([id, nm]) => `${id} (${nm})`).join(', ');
-        lines.push(`--------------------------------------------------------------------------------`);
+        lines.push('--------------------------------------------------------------------------------');
         lines.push(`GROUP #${idx + 1} | Occurrences: ${g.count}x | Affected Users (${g.users.size}): ${usersStr}`);
         lines.push(`Screen / Mini-Game : ${g.activeTab}`);
         lines.push(`First Seen         : ${g.firstTs ? new Date(g.firstTs).toISOString() : '—'}`);
         lines.push(`Last Seen          : ${g.lastTs ? new Date(g.lastTs).toISOString() : '—'}`);
-        lines.push(`Error Message      : ${g.message}`);
-        lines.push('Primary Stack Trace:');
+        lines.push(`Message / Summary  : ${g.message}`);
+        lines.push('Primary Diagnostic / Stack:');
         String(g.sampleStack || '—').split('\n').slice(0, 8).forEach(sl => lines.push(`  ${sl}`));
       });
     }
     lines.push('');
 
-    lines.push('[SECTION 3: CHRONOLOGICAL CRASH EVENTS & USER BREADCRUMBS]');
+    lines.push('[SECTION 3: CHRONOLOGICAL EVENTS, GAME STATE SNAPSHOTS & 25-STEP BLACKBOX]');
     sorted.forEach((r, idx) => {
       lines.push('--------------------------------------------------------------------------------');
-      lines.push(`EVENT #${idx + 1} | Key: ${r.id || 'n/a'}`);
+      lines.push(`EVENT #${idx + 1} | Key: ${r.id || 'n/a'} | Type: ${r.reportType || 'auto_crash'}`);
       lines.push(`Timestamp   : ${r.isoTime || (r.timestamp ? new Date(Number(r.timestamp)).toISOString() : 'n/a')} (${r.timestamp || 0})`);
       lines.push(`Player      : ID=${r.userId || 'anon'} | Name=${r.userName || '—'}${r.username ? ' (@' + r.username + ')' : ''}`);
       lines.push(`ActiveTab   : ${r.activeTab || 'unknown'}`);
+      if (r.tag) lines.push(`Bug Tag     : ${r.tag}`);
+      if (r.comment) lines.push(`User Comment: ${r.comment}`);
       if (r.source) lines.push(`Source      : ${r.source}`);
       if (r.userAgent) lines.push(`UserAgent   : ${r.userAgent}`);
       lines.push(`Message     : ${r.message || '—'}`);
-      lines.push('Stack Trace :');
+      if (r.gameState) {
+        try { lines.push(`GameState   : ${JSON.stringify(r.gameState)}`); } catch (e) {}
+      }
+      lines.push('Stack / Details:');
       String(r.stack || '—').split('\n').forEach(sl => lines.push(`  ${sl}`));
-      const acts = toArr(r.recentActions);
-      lines.push(`Recent User Actions (${acts.length}):`);
+
+      const capErrs = toArr(r.capturedErrors);
+      if (capErrs.length) {
+        lines.push(`Captured Session Errors (${capErrs.length}):`);
+        capErrs.forEach((ce, ci) => {
+          lines.push(`  ${ci + 1}. [${ce.time || ce.ts || ''}] (${ce.source || 'err'}) ${ce.message || ''}`);
+        });
+      }
+
+      const acts = toArr(r.actionBreadcrumbLog || r.recentActions);
+      lines.push(`Action Breadcrumb Log (${acts.length}):`);
       if (!acts.length) {
-        lines.push('  (no recorded actions prior to error)');
+        lines.push('  (no recorded actions prior to report)');
       } else {
         acts.forEach((a, ai) => {
           lines.push(`  ${ai + 1}. [${a.time || a.ts || ''}] ${a.action || JSON.stringify(a)}`);
@@ -3593,7 +4131,7 @@
   function renderAdminCrashesSub(sub) {
     sub.innerHTML = `
       <div class="bg-sec">
-        <h3>🧯 Телеметрия и выгрузка краш-логов (.txt)</h3>
+        <h3>🧯 Телеметрия, баг-репорты и выгрузка (.txt)</h3>
         <div class="bg-row" style="margin-bottom:8px">
           <input type="date" class="bg-input" id="admCrashDateInp" value="${esc(_admCrashDate)}" style="max-width:170px">
           <button class="bg-btn sm ${_admCrashAllDates ? '' : 'ghost'}" id="admCrashToggleAll">
@@ -3655,20 +4193,20 @@
       const listEl = sub.querySelector('#admCrashList');
       if (!statsEl || !listEl) return;
 
-      const allArr = Object.entries(raw || {}).map(([k, v]) => (v && typeof v === 'object' ? { id: k, ...v } : null)).filter(Boolean);
+      const allArr = extractAllCrashReports(raw);
       const filterKey = _admCrashAllDates ? 'all' : _admCrashDate;
       latestReports = allArr.filter(r => doesCrashMatchDate(r, filterKey));
       latestReports.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
 
       const usersSet = new Set(latestReports.map(r => String(r.userId || 'anon')));
-      statsEl.innerHTML = `Найдено логов: <b style="color:var(--bg-gold)">${latestReports.length}</b> (всего в БД: ${allArr.length}) • Затронуто игроков: <b>${usersSet.size}</b> • Команда в боте: <code>/get_crashes</code>`;
+      statsEl.innerHTML = `Найдено репортов: <b style="color:var(--bg-gold)">${latestReports.length}</b> (всего в БД: ${allArr.length}) • Затронуто игроков: <b>${usersSet.size}</b> • Команда в боте: <code>/get_crashes</code>`;
 
       if (!latestReports.length) {
-        listEl.innerHTML = `<div class="bg-muted">✨ За выбранный период критических ошибок не зафиксировано.</div>`;
+        listEl.innerHTML = `<div class="bg-muted">✨ За выбранный период критических ошибок и баг-репортов не зафиксировано.</div>`;
         return;
       }
 
-      // Группируем по тексту ошибки + экрану для наглядности частоты
+      // Группируем по тексту ошибки/тегу + экрану для наглядности частоты
       const grouped = new Map();
       for (const r of latestReports) {
         const k = `${r.activeTab || '?'}::${r.message || '?'}`;
@@ -3687,9 +4225,10 @@
               <span class="bg-chip gold">Повторов: ${g.count}× • Игроков: ${g.users.size}</span>
               <span class="bg-chip">${esc(r.activeTab || 'unknown')}</span>
             </div>
+            ${r.tag ? `<div style="margin-top:5px"><span class="bg-chip green">🏷 ${esc(r.tag)}</span></div>` : ''}
             <div style="font-weight:800;font-size:12.5px;margin-top:6px;color:#ff99ac">${esc(r.message || 'Ошибка')}</div>
             <div class="bg-muted" style="font-size:11px;margin-top:2px">Последний: ID ${esc(r.userId)} (${esc(r.userName || '—')}) • ${esc(timeStr)}</div>
-            <div class="bg-crash-pre">${esc(String(r.stack || '').slice(0, 500))}</div>
+            <div class="bg-crash-pre">${esc(String(r.stack || '').slice(0, 600))}</div>
           </div>
         `;
       }).join('');
@@ -3704,6 +4243,7 @@
   // ---------- АВТО-ИНИЦИАЛИЗАЦИЯ И ПЕРЕХВАТ DEEP-LINKS ----------
   function initBirchGames() {
     initTelemetrySystem();
+    ensureBugReportWidget();
     registerExclusiveSkinsIntoMainGame();
     applyExclusiveSkinTheme(getLocalState().equippedSkin || 'classic');
 
@@ -3751,9 +4291,10 @@
     onSkinChanged: applyExclusiveSkinTheme,
     syncAdminGrantsForMe,
     reportCrash: handleCapturedError,
+    getBreadcrumbs: () => [...actionBreadcrumbLog],
     exportCrashesTxt: async (ymd = formatLocalYmd(Date.now())) => {
-      const raw = await fbGet('crash_reports', true);
-      const arr = Object.entries(raw || {}).map(([k, v]) => (v && typeof v === 'object' ? { id: k, ...v } : null)).filter(Boolean);
+      const raw = await fbGet('crash_reports');
+      const arr = extractAllCrashReports(raw);
       const filtered = arr.filter(r => doesCrashMatchDate(r, ymd));
       const txt = buildStructuredCrashReportTxt(filtered, ymd);
       downloadTextFile(`crashes_${ymd}.txt`, txt);
