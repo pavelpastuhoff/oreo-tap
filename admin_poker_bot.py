@@ -1,0 +1,1344 @@
+"""Модуль эксклюзивного Админ-пульта и P2P-системы вызовов 1v1 (Берёзовый Покер & Берёзовые Шахматы).
+
+Интегрируется с bot.py и Firebase Realtime Database.
+"""
+import html
+import json
+import os
+import threading
+import time
+import urllib.parse
+import urllib.request
+import uuid
+
+MY_USER_ID = 594228143
+FIREBASE_DB_URL = os.environ.get(
+    "FIREBASE_DB_URL",
+    "https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app",
+).rstrip("/")
+PAVEL_BANK_DEFAULT = 433763254656000000
+PLAYERS_PAGE_SIZE = 6
+
+# Состояния диалогов в памяти: {user_id_int: {"mode": str, ...}}
+_user_states = {}
+_duel_listener_started = False
+
+RESOURCE_META = {
+    "coins": {"label": "🪙 Коины", "field": "coins", "unit": "🪙"},
+    "gems": {"label": "💎 Алмазики", "field": "gems", "unit": "💎"},
+    "energy": {"label": "⚡ Энергия", "field": "energy", "unit": "⚡"},
+    "sticks": {"label": "🪵 Палочки", "field": "sticks", "unit": "🪵"},
+}
+
+GAME_META = {
+    "poker": {"title": "🃏 Берёзовый Покер 1v1", "short": "Покер"},
+    "chess": {"title": "♟ Берёзовые Шахматы", "short": "Шахматы"},
+}
+
+VIKA_USER_ID = "1582574743"
+
+EXCLUSIVE_SKINS = {
+    "shushik": {
+        "id": "shushik",
+        "title": "🌹 Шушик",
+        "rarity": "Легендарный VIP-эксклюзив",
+        "dm_text": (
+            "🌹✨ <b>ЭКСКЛЮЗИВНЫЙ ПОДАРОК ВЫСШЕГО УРОВНЯ!</b>\n\n"
+            "Вам открыт самый редкий и роскошный скин в ОРЕО67 — <b>«🌹 Шушик»</b>!\n"
+            "• 🖤 Чёрный бархат в обрамлении алых роз с каплями росы\n"
+            "• 🐱 Серебряно-платиновая маска с кошачьими ушками и неоновым свечением\n"
+            "• ❤️‍🔥 Веер алых сердец, роз и вечерняя атмосфера при каждом касании!\n\n"
+            "👇 Заходите в игру, чтобы примерить легенду прямо сейчас!"
+        ),
+    },
+    "airochai": {
+        "id": "airochai",
+        "title": "🍵 Айрочай",
+        "rarity": "Премиум Чайная Коллекция",
+        "dm_text": (
+            "🍵🏮 <b>НОВЫЙ ПРЕМИУМ-СКИН РАЗБЛОКИРОВАН!</b>\n\n"
+            "На ваш аккаунт выдан фирменный скин <b>«🍵 Айрочай (HONG KONG TEA 茶)»</b>!\n"
+            "• Выдержанный чайный блин Шу Пуэра, красные фонарики и бамбуковая шкала энергии!\n\n"
+            "👇 Откройте игру и активируйте новый стиль!"
+        ),
+    },
+    "denis_lykasov": {
+        "id": "denis_lykasov",
+        "title": "🎬 Денис Лыкасов",
+        "rarity": "Кино-эксклюзив Director's Cut",
+        "dm_text": (
+            "🎬👑 <b>КАМЕРА! МОТОР! СКИН РАЗБЛОКИРОВАН!</b>\n\n"
+            "Вам выдан эксклюзивный кино-скин <b>«🎬 Денис Лыкасов»</b>!\n"
+            "• Кинохлопушка 35mm, неоновый титр с короной и таймлайн Premiere Pro RENDERING!\n\n"
+            "👇 Врывайтесь в кадр прямо сейчас!"
+        ),
+    },
+}
+
+
+def is_admin(user_id) -> bool:
+    try:
+        return int(user_id) == MY_USER_ID
+    except (ValueError, TypeError):
+        return False
+
+
+def fmt_num(val) -> str:
+    try:
+        n = int(round(float(val)))
+        return f"{n:,}".replace(",", " ")
+    except (ValueError, TypeError):
+        return "0"
+
+
+def fb_request(path: str, method: str = "GET", data=None):
+    url = f"{FIREBASE_DB_URL}/{path.lstrip('/')}.json"
+    body = None
+    headers = {"Content-Type": "application/json"}
+    if data is not None:
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else None
+    except Exception as e:
+        print(f"[Firebase {method} {path}] Ошибка:", e)
+        return None
+
+
+def fb_get(path: str):
+    return fb_request(path, "GET")
+
+
+def fb_put(path: str, data):
+    return fb_request(path, "PUT", data)
+
+
+def fb_patch(path: str, data):
+    return fb_request(path, "PATCH", data)
+
+
+def get_all_players() -> list:
+    raw = fb_get("players") or {}
+    players = []
+    if isinstance(raw, dict):
+        for uid, pdata in raw.items():
+            if not isinstance(pdata, dict):
+                continue
+            pid = str(pdata.get("id") or uid)
+            players.append(
+                {
+                    "id": pid,
+                    "name": str(pdata.get("name") or f"Игрок {pid}"),
+                    "username": str(pdata.get("username") or ""),
+                    "coins": int(float(pdata.get("coins") or 0)),
+                    "gems": int(float(pdata.get("gems") or 0)),
+                    "energy": int(float(pdata.get("energy") or 500)),
+                    "sticks": int(float(pdata.get("sticks") or 0)),
+                    "ts": int(float(pdata.get("ts") or 0)),
+                }
+            )
+    players.sort(key=lambda x: (x["coins"], x["ts"]), reverse=True)
+    return players
+
+
+def get_player(uid: str) -> dict:
+    uid = str(uid)
+    data = fb_get(f"players/{urllib.parse.quote(uid)}")
+    if not isinstance(data, dict):
+        data = {"id": uid, "name": f"Игрок {uid}", "coins": 0, "gems": 5, "energy": 500, "sticks": 0}
+    return {
+        "id": str(data.get("id") or uid),
+        "name": str(data.get("name") or f"Игрок {uid}"),
+        "username": str(data.get("username") or ""),
+        "coins": int(float(data.get("coins") or 0)),
+        "gems": int(float(data.get("gems") or 0)),
+        "energy": int(float(data.get("energy") or 500)),
+        "sticks": int(float(data.get("sticks") or 0)),
+        "adminResetId": int(float(data.get("adminResetId") or 0)),
+    }
+
+
+def register_bot_user(user: dict):
+    if not user or not user.get("id"):
+        return
+    uid = str(user["id"])
+    first_name = str(user.get("first_name") or "Тапер")
+    username = str(user.get("username") or "")
+    existing = fb_get(f"players/{urllib.parse.quote(uid)}")
+    patch = {
+        "id": uid,
+        "name": first_name,
+        "username": username,
+        "lastBotSeen": int(time.time() * 1000),
+    }
+    if not isinstance(existing, dict):
+        patch.update({"coins": 0, "gems": 5, "energy": 500, "sticks": 0, "ts": int(time.time() * 1000)})
+    fb_patch(f"players/{urllib.parse.quote(uid)}", patch)
+
+
+def get_common_bank() -> int:
+    data = fb_get("common_bank")
+    if isinstance(data, dict) and data.get("coins") is not None:
+        return int(float(data.get("coins") or 0))
+    fb_put("common_bank", {"coins": PAVEL_BANK_DEFAULT, "sponsor": "Pavel", "updatedAt": int(time.time() * 1000)})
+    return PAVEL_BANK_DEFAULT
+
+
+def set_common_bank(new_amount: int) -> int:
+    val = max(0, int(new_amount))
+    fb_patch("common_bank", {"coins": val, "sponsor": "Pavel", "updatedAt": int(time.time() * 1000)})
+    return val
+
+
+def apply_resource_change(target_uid: str, res_key: str, mode: str, amount: int = 0) -> tuple:
+    meta = RESOURCE_META.get(res_key, RESOURCE_META["coins"])
+    field = meta["field"]
+    p = get_player(target_uid)
+    old_val = int(p.get(field, 0))
+    now_ms = int(time.time() * 1000)
+
+    if mode == "reset":
+        new_val = 0
+        delta = -old_val
+    elif mode == "set":
+        new_val = max(0, int(amount))
+        delta = new_val - old_val
+    else:
+        delta = int(amount)
+        new_val = max(0, old_val + delta)
+
+    patch_data = {
+        field: new_val,
+        "ts": now_ms,
+        "adminUpdatedAt": now_ms,
+    }
+    if field == "coins":
+        patch_data["taps"] = new_val
+        patch_data["count"] = new_val
+        if mode == "reset":
+            patch_data["adminResetId"] = int(p.get("adminResetId", 0)) + 1
+
+    fb_patch(f"players/{urllib.parse.quote(str(target_uid))}", patch_data)
+    fb_put(
+        f"admin_grants/{urllib.parse.quote(str(target_uid))}/{now_ms}",
+        {
+            "resource": res_key,
+            "mode": mode,
+            "delta": delta,
+            "newValue": new_val,
+            "ts": now_ms,
+            "claimed": False,
+        },
+    )
+    return old_val, new_val, delta
+
+
+def decorate_main_keyboard(kb: dict, user_id, webapp_url: str) -> dict:
+    rows = list((kb or {}).get("inline_keyboard", []))
+    rows.append([{"text": "⚔️ Вызов 1v1 (Покер / Шахматы)", "callback_data": "duel_menu"}])
+    if is_admin(user_id):
+        rows.append([{"text": "👑 Админ-пульт", "callback_data": "adm_home"}])
+    return {"inline_keyboard": rows}
+
+
+def admin_home_text() -> str:
+    bank = get_common_bank()
+    players_cnt = len(get_all_players())
+    return (
+        "👑 <b>ЭКСКЛЮЗИВНЫЙ АДМИН-ПУЛЬТ ОРЕО</b>\n\n"
+        f"👤 <b>Владелец:</b> <code>{MY_USER_ID}</code>\n"
+        f"👥 <b>Игроков в базе Firebase:</b> <b>{players_cnt}</b>\n"
+        f"🏦 <b>Общий банк турнира:</b> <b>{fmt_num(bank)} 🪙</b>\n\n"
+        "Выберите действие ниже:"
+    )
+
+
+def admin_home_kb(webapp_url: str) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "🎁 Выдать ресурсы игрокам", "callback_data": "adm_players:0"}],
+            [{"text": "🎭 Управление скинами (Шушик / Айрочай / Денис)", "callback_data": "adm_skins_home"}],
+            [{"text": "🃏 Создать турнир по покеру", "callback_data": "adm_tour_new"}],
+            [{"text": "🏦 Управление Общим банком", "callback_data": "adm_bank"}],
+            [{"text": "⚔️ Все активные дуэли 1v1", "callback_data": "adm_duels"}],
+            [{"text": "« В главное меню бота", "callback_data": "tab_home"}],
+        ]
+    }
+
+
+def grant_exclusive_skin(target_uid: str, skin_id: str, call_fn, webapp_url: str) -> tuple:
+    meta = EXCLUSIVE_SKINS.get(skin_id)
+    if not meta:
+        return False, "Неизвестный скин"
+    uid = str(target_uid)
+    now_ms = int(time.time() * 1000)
+
+    # Сохраняем в players/{userId}/unlocked_skins и в единую ветку user_skins/{userId}
+    fb_patch(f"players/{urllib.parse.quote(uid)}/unlocked_skins", {skin_id: True})
+    fb_patch(f"user_skins/{urllib.parse.quote(uid)}", {skin_id: True, "updatedAt": now_ms})
+    fb_put(
+        f"admin_grants/{urllib.parse.quote(uid)}/{now_ms}",
+        {
+            "resource": "skin",
+            "skinId": skin_id,
+            "mode": "unlock",
+            "delta": 1,
+            "newValue": 1,
+            "ts": now_ms,
+            "claimed": False,
+        },
+    )
+
+    delivered = False
+    if uid.isdigit():
+        kb = {
+            "inline_keyboard": [
+                [{"text": "✨ Примерить скин в ОРЕО67!", "web_app": {"url": f"{webapp_url}?equip_skin={urllib.parse.quote(skin_id)}"}}],
+            ]
+        }
+        try:
+            call_fn("sendMessage", chat_id=int(uid), text=meta["dm_text"], parse_mode="HTML", reply_markup=kb)
+            delivered = True
+        except Exception as e:
+            print(f"[Skin Notify {uid}] Ошибка ЛС:", e)
+    return True, delivered
+
+
+def build_skins_admin_home() -> tuple:
+    text = (
+        "🎭 <b>УПРАВЛЕНИЕ ЭКСКЛЮЗИВНЫМИ СКИНАМИ</b>\n\n"
+        "Доступные коллекционные скины:\n"
+        "• <b>🌹 Шушик</b> — <i>Легендарный VIP (бархат, розы, платиновая кошачья маска)</i>\n"
+        "• <b>🍵 Айрочай</b> — <i>Чайный блин Шу Пуэра HONG KONG TEA 茶</i>\n"
+        "• <b>🎬 Денис Лыкасов</b> — <i>Кинохлопушка + Premiere Pro таймлайн</i>\n\n"
+        "⚡ Выдайте <b>«🌹 Шушик»</b> в 1 клик себе или Вике (<code>Viii</code>), либо выберите любого игрока из базы <code>players</code>:"
+    )
+    kb = {
+        "inline_keyboard": [
+            [{"text": "🌹 Выдать «Шушик» СЕБЕ (Павел)", "callback_data": f"adm_skin_give:{MY_USER_ID}:shushik"}],
+            [{"text": "🌹 Выдать «Шушик» ВИКЕ (Viii)", "callback_data": f"adm_skin_give:{VIKA_USER_ID}:shushik"}],
+            [{"text": "👥 Выбрать любого игрока из базы", "callback_data": "adm_skin_page:0"}],
+            [{"text": "🔍 Поиск игрока по нику / ID", "callback_data": "adm_skin_search"}],
+            [{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}],
+        ]
+    }
+    return text, kb
+
+
+def build_player_skin_menu(target_uid: str) -> tuple:
+    p = get_player(target_uid)
+    unlocked = fb_get(f"players/{urllib.parse.quote(str(target_uid))}/unlocked_skins") or {}
+    if not isinstance(unlocked, dict):
+        unlocked = {}
+    owned_labels = [EXCLUSIVE_SKINS[k]["title"] for k in EXCLUSIVE_SKINS if unlocked.get(k)]
+    owned_str = ", ".join(owned_labels) if owned_labels else "нет эксклюзивных скинов"
+    uname = f" (@{html.escape(p['username'])})" if p.get("username") else ""
+
+    text = (
+        f"🎭 <b>ВЫДАЧА СКИНОВ ИГРОКУ</b>\n\n"
+        f"👤 <b>Игрок:</b> {html.escape(p['name'])}{uname}\n"
+        f"🆔 <b>ID:</b> <code>{html.escape(p['id'])}</code>\n"
+        f"✨ <b>Открытые эксклюзивы:</b> {html.escape(owned_str)}\n\n"
+        "Нажмите на скин для мгновенной выдачи в <code>unlocked_skins</code> + уведомления в ЛС:"
+    )
+    rows = []
+    for sk_id, meta in EXCLUSIVE_SKINS.items():
+        mark = "✅ " if unlocked.get(sk_id) else "🎁 Выдать "
+        rows.append([{"text": f"{mark}{meta['title']} ({meta['rarity']})", "callback_data": f"adm_skin_give:{target_uid}:{sk_id}"}])
+    rows.append([{"text": "« К карточке ресурсов игрока", "callback_data": f"adm_sel:{target_uid}"}])
+    rows.append([{"text": "« К разделу скинов", "callback_data": "adm_skins_home"}])
+    return text, {"inline_keyboard": rows}
+
+
+def build_players_page(page: int, prefix: str, query: str = "", exclude_uid: str = "") -> tuple:
+    all_p = get_all_players()
+    if exclude_uid:
+        all_p = [p for p in all_p if str(p["id"]) != str(exclude_uid)]
+    if query:
+        q = query.lower().lstrip("@")
+        all_p = [
+            p
+            for p in all_p
+            if q in p["name"].lower() or q in p["id"].lower() or q in p.get("username", "").lower()
+        ]
+
+    total = len(all_p)
+    max_page = max(0, (total - 1) // PLAYERS_PAGE_SIZE)
+    page = max(0, min(page, max_page))
+    slice_p = all_p[page * PLAYERS_PAGE_SIZE : (page + 1) * PLAYERS_PAGE_SIZE]
+
+    rows = []
+    for p in slice_p:
+        uname = f" (@{p['username']})" if p.get("username") else ""
+        label = f"👤 {p['name']}{uname} • {fmt_num(p['coins'])} 🪙"
+        rows.append([{"text": label[:60], "callback_data": f"{prefix}_sel:{p['id']}"}])
+
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ Назад", "callback_data": f"{prefix}_page:{page - 1}"})
+    nav.append({"text": f"📄 {page + 1}/{max_page + 1}", "callback_data": "noop"})
+    if page < max_page:
+        nav.append({"text": "Вперёд ➡️", "callback_data": f"{prefix}_page:{page + 1}"})
+    if total > 0:
+        rows.append(nav)
+
+    rows.append([{"text": "🔍 Поиск игрока (ID / Имя / @username)", "callback_data": f"{prefix}_search"}])
+    if prefix == "adm":
+        rows.append([{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}])
+    elif prefix == "adm_skin":
+        rows.append([{"text": "« К разделу скинов", "callback_data": "adm_skins_home"}])
+    else:
+        rows.append([{"text": "« В главное меню", "callback_data": "tab_home"}])
+
+    if prefix == "adm":
+        title = "🎁 <b>ВЫДАЧА РЕСУРСОВ — ВЫБОР ИГРОКА</b>\n"
+    elif prefix == "adm_skin":
+        title = "🎭 <b>ВЫДАЧА СКИНОВ — ВЫБОР ИГРОКА</b>\n"
+    else:
+        title = "⚔️ <b>ВЫЗОВ НА ДУЭЛЬ 1v1 — ВЫБЕРИТЕ СОПЕРНИКА</b>\n"
+    q_line = f"🔎 Фильтр: <code>{html.escape(query)}</code>\n" if query else ""
+    text = (
+        f"{title}{q_line}"
+        f"Всего найдено игроков: <b>{total}</b>\n\n"
+        "Нажмите на игрока из списка или воспользуйтесь поиском:"
+    )
+    return text, {"inline_keyboard": rows}
+
+
+def build_player_resource_menu(target_uid: str) -> tuple:
+    p = get_player(target_uid)
+    uname = f" (@{html.escape(p['username'])})" if p.get("username") else ""
+    text = (
+        f"👤 <b>Игрок:</b> {html.escape(p['name'])}{uname}\n"
+        f"🆔 <b>ID:</b> <code>{html.escape(p['id'])}</code>\n\n"
+        f"🪙 <b>Коины:</b> <code>{fmt_num(p['coins'])}</code>\n"
+        f"💎 <b>Алмазики:</b> <code>{fmt_num(p['gems'])}</code>\n"
+        f"⚡ <b>Энергия:</b> <code>{fmt_num(p['energy'])}</code>\n"
+        f"🪵 <b>Палочки:</b> <code>{fmt_num(p['sticks'])}</code>\n\n"
+        "👇 Выберите ресурс для управления:"
+    )
+    kb = {
+        "inline_keyboard": [
+            [
+                {"text": "🪙 Коины", "callback_data": f"adm_res:{target_uid}:coins"},
+                {"text": "💎 Алмазики", "callback_data": f"adm_res:{target_uid}:gems"},
+            ],
+            [
+                {"text": "⚡ Энергия", "callback_data": f"adm_res:{target_uid}:energy"},
+                {"text": "🪵 Палочки", "callback_data": f"adm_res:{target_uid}:sticks"},
+            ],
+            [{"text": "🎭 Выдать эксклюзивный скин", "callback_data": f"adm_skin_sel:{target_uid}"}],
+            [{"text": "« К списку игроков", "callback_data": "adm_players:0"}],
+            [{"text": "👑 Админ-пульт", "callback_data": "adm_home"}],
+        ]
+    }
+    return text, kb
+
+
+def build_resource_presets_menu(target_uid: str, res_key: str) -> tuple:
+    p = get_player(target_uid)
+    meta = RESOURCE_META.get(res_key, RESOURCE_META["coins"])
+    cur_val = p.get(meta["field"], 0)
+    text = (
+        f"🎁 <b>Управление ресурсом: {meta['label']}</b>\n\n"
+        f"👤 <b>Игрок:</b> {html.escape(p['name'])} (<code>{html.escape(p['id'])}</code>)\n"
+        f"📊 <b>Текущий баланс:</b> <code>{fmt_num(cur_val)} {meta['unit']}</code>\n\n"
+        "Выберите пресет начисления или введите точную сумму вручную:"
+    )
+    kb = {
+        "inline_keyboard": [
+            [
+                {"text": f"+10k {meta['unit']}", "callback_data": f"adm_act:{target_uid}:{res_key}:add:10000"},
+                {"text": f"+100k {meta['unit']}", "callback_data": f"adm_act:{target_uid}:{res_key}:add:100000"},
+                {"text": f"+1M {meta['unit']}", "callback_data": f"adm_act:{target_uid}:{res_key}:add:1000000"},
+            ],
+            [
+                {"text": "✏️ Ручной ввод", "callback_data": f"adm_manual:{target_uid}:{res_key}"},
+                {"text": "🗑 Сбросить в 0", "callback_data": f"adm_act:{target_uid}:{res_key}:reset:0"},
+            ],
+            [{"text": "« Назад к игроку", "callback_data": f"adm_sel:{target_uid}"}],
+        ]
+    }
+    return text, kb
+
+
+def build_bank_menu() -> tuple:
+    bank = get_common_bank()
+    text = (
+        "🏦 <b>УПРАВЛЕНИЕ ОБЩИМ БАНКОМ ТУРНИРА</b>\n\n"
+        f"💰 <b>Текущий баланс банка:</b>\n<code>{fmt_num(bank)} 🪙</code>\n\n"
+        "Из Общего банка выделяются спонсорские призовые фонды для турниров по Берёзовому Покеру."
+    )
+    kb = {
+        "inline_keyboard": [
+            [
+                {"text": "+10M 🪙", "callback_data": "adm_bank_act:add:10000000"},
+                {"text": "+1B 🪙", "callback_data": "adm_bank_act:add:1000000000"},
+            ],
+            [
+                {"text": "✏️ Задать сумму банка", "callback_data": "adm_bank_manual"},
+                {"text": "🔄 Восстановить дефолт Павла", "callback_data": "adm_bank_act:default:0"},
+            ],
+            [{"text": "🃏 Создать турнир по покеру", "callback_data": "adm_tour_new"}],
+            [{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}],
+        ]
+    }
+    return text, kb
+
+
+def build_tournament_draft_menu(draft: dict) -> tuple:
+    bank = get_common_bank()
+    title = draft.get("title") or "Берёзовый Кубок ОРЕО"
+    start_time = draft.get("start_time") or "Сегодня в 20:00 МСК"
+    sponsor_pool = int(draft.get("prize_pool") or 10000000)
+    text = (
+        "🃏 <b>СОЗДАНИЕ ТУРНИРА ПО БЕРЁЗОВОМУ ПОКЕРУ</b>\n\n"
+        f"🏦 <b>Доступно в Общем банке:</b> <code>{fmt_num(bank)} 🪙</code>\n"
+        "──────────────────────\n"
+        f"🏆 <b>Название:</b> {html.escape(title)}\n"
+        f"⏰ <b>Время старта:</b> {html.escape(start_time)}\n"
+        f"💰 <b>Спонсорский фонд из банка:</b> <code>{fmt_num(sponsor_pool)} 🪙</code>\n\n"
+        "При нажатии <b>«🚀 Запустить + Рассылка»</b> сумма спишется из Общего банка в фонд турнира, "
+        "а все игроки из Firebase получат приглашение с кнопкой входа за стол!"
+    )
+    kb = {
+        "inline_keyboard": [
+            [{"text": "✏️ Изменить название", "callback_data": "adm_tour_set:title"}],
+            [
+                {"text": "⏰ Через 15 мин", "callback_data": "adm_tour_time:Через 15 минут"},
+                {"text": "⏰ Сегодня 20:00", "callback_data": "adm_tour_time:Сегодня в 20:00 МСК"},
+                {"text": "✏️ Своё время", "callback_data": "adm_tour_set:time"},
+            ],
+            [
+                {"text": "💰 1M 🪙", "callback_data": "adm_tour_pool:1000000"},
+                {"text": "💰 10M 🪙", "callback_data": "adm_tour_pool:10000000"},
+                {"text": "💰 100M 🪙", "callback_data": "adm_tour_pool:100000000"},
+            ],
+            [
+                {"text": "💰 1B 🪙", "callback_data": "adm_tour_pool:1000000000"},
+                {"text": "✏️ Своя сумма фонда", "callback_data": "adm_tour_set:pool"},
+            ],
+            [{"text": "🚀 Запустить турнир + Broadcast всем!", "callback_data": "adm_tour_launch"}],
+            [{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}],
+        ]
+    }
+    return text, kb
+
+
+def launch_poker_tournament(draft: dict, call_fn, webapp_url: str) -> tuple:
+    bank = get_common_bank()
+    prize_pool = max(0, int(draft.get("prize_pool") or 10000000))
+    if prize_pool > bank:
+        prize_pool = bank
+
+    new_bank = set_common_bank(bank - prize_pool)
+    tid = f"tour_{int(time.time())}"
+    title = draft.get("title") or "Берёзовый Кубок ОРЕО"
+    start_time = draft.get("start_time") or "Сегодня в 20:00 МСК"
+    now_ms = int(time.time() * 1000)
+
+    tour_obj = {
+        "id": tid,
+        "title": title,
+        "startTime": start_time,
+        "prizePool": prize_pool,
+        "sponsor": "Общий Банк (Pavel)",
+        "status": "open",
+        "createdAt": now_ms,
+        "participants": {},
+    }
+    fb_put(f"poker_tournaments/{tid}", tour_obj)
+    fb_put("active_tournament", tour_obj)
+
+    players = get_all_players()
+    table_url = f"{webapp_url}?mode=poker_tournament&tournament={urllib.parse.quote(tid)}"
+    broadcast_text = (
+        "🃏🔥 <b>ТУРНИР ПО БЕРЁЗОВОМУ ПОКЕРУ ОТКРЫТ!</b>\n\n"
+        f"🏆 <b>Турнир:</b> {html.escape(title)}\n"
+        f"⏰ <b>Старт:</b> {html.escape(start_time)}\n"
+        f"💰 <b>Спонсорский призовой фонд:</b> <b>{fmt_num(prize_pool)} 🪙</b>\n\n"
+        "Занимай место за деревянным столом прямо сейчас и забери главный куш!"
+    )
+    broadcast_kb = {
+        "inline_keyboard": [
+            [{"text": "🔥 Занять место за столом!", "web_app": {"url": table_url}}],
+        ]
+    }
+
+    sent_count = 0
+    for p in players:
+        uid = str(p.get("id") or "")
+        if not uid.isdigit():
+            continue
+        try:
+            call_fn(
+                "sendMessage",
+                chat_id=int(uid),
+                text=broadcast_text,
+                parse_mode="HTML",
+                reply_markup=broadcast_kb,
+            )
+            sent_count += 1
+        except Exception:
+            pass
+
+    return tour_obj, sent_count, new_bank
+
+
+# ==================== СИСТЕМА ВЫЗОВОВ 1v1 (ПОКЕР И ШАХМАТЫ) ====================
+
+def build_duel_setup_menu(challenger_id: str, opponent_id: str, game: str, bet: int) -> tuple:
+    challenger = get_player(challenger_id)
+    opponent = get_player(opponent_id)
+    gmeta = GAME_META.get(game, GAME_META["poker"])
+    opp_uname = f" (@{html.escape(opponent['username'])})" if opponent.get("username") else ""
+
+    text = (
+        "⚔️ <b>ВЫЗОВ ИГРОКА НА ДУЭЛЬ 1v1</b>\n\n"
+        f"👤 <b>Соперник:</b> {html.escape(opponent['name'])}{opp_uname}\n"
+        f"🎮 <b>Дисциплина:</b> <b>{gmeta['title']}</b>\n"
+        f"💰 <b>Ставка на кон:</b> <code>{fmt_num(bet)} 🪙</code> (Банк дуэли: <code>{fmt_num(bet * 2)} 🪙</code>)\n"
+        f"👛 <b>Ваш баланс:</b> <code>{fmt_num(challenger['coins'])} 🪙</code>\n\n"
+        "<i>При отправке вызова ваша ставка временно замораживается. Если соперник отклонит вызов — коины мгновенно вернутся вам!</i>"
+    )
+    kb = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": ("✅ " if game == "poker" else "") + "🃏 Берёзовый Покер 1v1",
+                    "callback_data": f"duel_cfg:{opponent_id}:poker:{bet}",
+                },
+                {
+                    "text": ("✅ " if game == "chess" else "") + "♟ Берёзовые Шахматы",
+                    "callback_data": f"duel_cfg:{opponent_id}:chess:{bet}",
+                },
+            ],
+            [
+                {"text": "1 000 🪙", "callback_data": f"duel_cfg:{opponent_id}:{game}:1000"},
+                {"text": "10 000 🪙", "callback_data": f"duel_cfg:{opponent_id}:{game}:10000"},
+                {"text": "50 000 🪙", "callback_data": f"duel_cfg:{opponent_id}:{game}:50000"},
+            ],
+            [
+                {"text": "100 000 🪙", "callback_data": f"duel_cfg:{opponent_id}:{game}:100000"},
+                {"text": "1 000 000 🪙", "callback_data": f"duel_cfg:{opponent_id}:{game}:1000000"},
+                {"text": "✏️ Своя ставка", "callback_data": f"duel_bet_manual:{opponent_id}:{game}"},
+            ],
+            [{"text": "🔥 БРОСИТЬ ВЫЗОВ!", "callback_data": f"duel_send:{opponent_id}:{game}:{bet}"}],
+            [{"text": "« Выбрать другого соперника", "callback_data": "duel_page:0"}],
+        ]
+    }
+    return text, kb
+
+
+def send_duel_notification_to_opponent(challenge_id: str, ch: dict, call_fn, webapp_url: str) -> bool:
+    opponent_id = str(ch.get("opponentId") or ch.get("targetId") or "")
+    if not opponent_id.isdigit():
+        return False
+
+    challenger_name = str(ch.get("challengerName") or "Игрок")
+    challenger_uname = str(ch.get("challengerUsername") or "").lstrip("@")
+    display_challenger = f"@{challenger_uname}" if challenger_uname else html.escape(challenger_name)
+
+    game_key = str(ch.get("game") or "poker").lower()
+    if "chess" in game_key or "шахмат" in game_key:
+        game_key = "chess"
+    else:
+        game_key = "poker"
+    gmeta = GAME_META[game_key]
+    bet = int(float(ch.get("bet") or 0))
+
+    duel_url = (
+        f"{webapp_url}?duel={urllib.parse.quote(challenge_id)}"
+        f"&game={urllib.parse.quote(game_key)}&bet={bet}"
+    )
+    msg_text = (
+        f"⚔️ Игрок {display_challenger} вызывает вас на дуэль в "
+        f"<b>{gmeta['title']}</b> на ставку <b>{fmt_num(bet)} коинов</b>!\n\n"
+        f"🏆 <b>Общий банк на кону:</b> <code>{fmt_num(bet * 2)} 🪙</code>\n"
+        "Жмите кнопку ниже, чтобы принять бой в игре или отклонить вызов:"
+    )
+    kb = {
+        "inline_keyboard": [
+            [{"text": "✅ Принять вызов в игре", "web_app": {"url": duel_url}}],
+            [{"text": "❌ Отклонить", "callback_data": f"duel_decline:{challenge_id}"}],
+        ]
+    }
+    try:
+        call_fn(
+            "sendMessage",
+            chat_id=int(opponent_id),
+            text=msg_text,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        fb_patch(
+            f"duel_challenges/{urllib.parse.quote(challenge_id)}",
+            {"notified": True, "notifiedAt": int(time.time() * 1000)},
+        )
+        return True
+    except Exception as e:
+        print(f"[Duel Notify {challenge_id}] Ошибка отправки в ЛС:", e)
+        return False
+
+
+def create_duel_challenge(
+    challenger_user: dict,
+    opponent_id: str,
+    game: str,
+    bet: int,
+    call_fn,
+    webapp_url: str,
+) -> tuple:
+    challenger_id = str(challenger_user.get("id") or "")
+    challenger = get_player(challenger_id)
+    opponent = get_player(opponent_id)
+    bet = max(100, int(bet))
+
+    if challenger["coins"] < bet:
+        return False, f"❌ Недостаточно коинов! Ваш баланс: <b>{fmt_num(challenger['coins'])} 🪙</b>, нужно: <b>{fmt_num(bet)} 🪙</b>.", None
+
+    # Замораживаем ставку Игрока А
+    new_coins = challenger["coins"] - bet
+    now_ms = int(time.time() * 1000)
+    fb_patch(
+        f"players/{urllib.parse.quote(challenger_id)}",
+        {"coins": new_coins, "taps": new_coins, "count": new_coins, "ts": now_ms},
+    )
+
+    challenge_id = f"duel_{now_ms}_{uuid.uuid4().hex[:6]}"
+    ch_data = {
+        "id": challenge_id,
+        "challengerId": challenger_id,
+        "challengerName": challenger_user.get("first_name") or challenger["name"],
+        "challengerUsername": challenger_user.get("username") or challenger.get("username") or "",
+        "opponentId": str(opponent_id),
+        "opponentName": opponent["name"],
+        "opponentUsername": opponent.get("username") or "",
+        "game": game,
+        "gameTitle": GAME_META.get(game, GAME_META["poker"])["title"],
+        "bet": bet,
+        "escrowFrozen": True,
+        "status": "pending",
+        "notified": False,
+        "createdAt": now_ms,
+    }
+    fb_put(f"duel_challenges/{challenge_id}", ch_data)
+    send_duel_notification_to_opponent(challenge_id, ch_data, call_fn, webapp_url)
+    return True, "", ch_data
+
+
+def decline_or_cancel_duel(challenge_id: str, actor_id: str, call_fn, is_cancel: bool = False) -> tuple:
+    ch = fb_get(f"duel_challenges/{urllib.parse.quote(challenge_id)}")
+    if not isinstance(ch, dict):
+        return False, "⚠️ Вызов не найден или уже завершён."
+
+    status = str(ch.get("status") or "")
+    if status != "pending":
+        return False, f"⚠️ Этот вызов уже имеет статус: <b>{html.escape(status)}</b>."
+
+    challenger_id = str(ch.get("challengerId") or "")
+    opponent_id = str(ch.get("opponentId") or ch.get("targetId") or "")
+    if is_cancel and str(actor_id) != challenger_id and not is_admin(actor_id):
+        return False, "⚠️ Только создатель вызова может его отменить."
+    if not is_cancel and str(actor_id) != opponent_id and not is_admin(actor_id):
+        return False, "⚠️ Этот вызов адресован другому игроку."
+
+    bet = int(float(ch.get("bet") or 0))
+    now_ms = int(time.time() * 1000)
+    new_status = "cancelled" if is_cancel else "declined"
+
+    # Возвращаем замороженную ставку Игроку А
+    if ch.get("escrowFrozen", True) and bet > 0 and challenger_id:
+        challenger = get_player(challenger_id)
+        restored = challenger["coins"] + bet
+        fb_patch(
+            f"players/{urllib.parse.quote(challenger_id)}",
+            {"coins": restored, "taps": restored, "count": restored, "ts": now_ms},
+        )
+        fb_put(
+            f"admin_grants/{urllib.parse.quote(challenger_id)}/{now_ms}",
+            {
+                "resource": "coins",
+                "mode": "add",
+                "delta": bet,
+                "newValue": restored,
+                "reason": "duel_refund",
+                "ts": now_ms,
+                "claimed": False,
+            },
+        )
+
+    fb_patch(
+        f"duel_challenges/{urllib.parse.quote(challenge_id)}",
+        {
+            "status": new_status,
+            "escrowFrozen": False,
+            "resolvedAt": now_ms,
+        },
+    )
+
+    if not is_cancel and challenger_id.isdigit():
+        opp_name = html.escape(str(ch.get("opponentName") or "Соперник"))
+        try:
+            call_fn(
+                "sendMessage",
+                chat_id=int(challenger_id),
+                text=(
+                    f"❌ <b>{opp_name} отклонил ваш вызов на дуэль!</b>\n"
+                    f"💰 Замороженная ставка <b>{fmt_num(bet)} 🪙</b> полностью возвращена на ваш баланс."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    return True, (
+        f"✅ Вызов отменён. Ставка <b>{fmt_num(bet)} 🪙</b> возвращена на ваш баланс."
+        if is_cancel
+        else f"❌ Вы отклонили вызов. Замороженная ставка <b>{fmt_num(bet)} 🪙</b> возвращена игроку."
+    )
+
+
+def process_duel_challenges_once(call_fn, webapp_url: str):
+    """Проверяет ветки duel_challenges и skin_notifications в Firebase и рассылает ЛС уведомления."""
+    raw = fb_get("duel_challenges")
+    if isinstance(raw, dict):
+        for cid, ch in raw.items():
+            if not isinstance(ch, dict):
+                continue
+            if str(ch.get("status") or "pending") == "pending" and not ch.get("notified"):
+                send_duel_notification_to_opponent(str(cid), ch, call_fn, webapp_url)
+
+    sraw = fb_get("skin_notifications")
+    if isinstance(sraw, dict):
+        for nid, item in sraw.items():
+            if not isinstance(item, dict) or item.get("sent"):
+                continue
+            uid = str(item.get("userId") or "")
+            sk_id = str(item.get("skinId") or "")
+            meta = EXCLUSIVE_SKINS.get(sk_id)
+            if uid.isdigit() and meta:
+                try:
+                    call_fn(
+                        "sendMessage",
+                        chat_id=int(uid),
+                        text=meta["dm_text"],
+                        parse_mode="HTML",
+                        reply_markup={
+                            "inline_keyboard": [
+                                [{"text": "✨ Примерить скин в ОРЕО67!", "web_app": {"url": f"{webapp_url}?equip_skin={urllib.parse.quote(sk_id)}"}}]
+                            ]
+                        },
+                    )
+                except Exception:
+                    pass
+            fb_patch(f"skin_notifications/{urllib.parse.quote(str(nid))}", {"sent": True, "sentAt": int(time.time() * 1000)})
+
+
+def start_duel_listener(call_fn, webapp_url: str, interval_sec: float = 4.0):
+    """Запускает фоновый поток-слушатель ветки duel_challenges/{challengeId}."""
+    global _duel_listener_started
+    if _duel_listener_started:
+        return
+    _duel_listener_started = True
+
+    def _worker():
+        while True:
+            try:
+                process_duel_challenges_once(call_fn, webapp_url)
+            except Exception as e:
+                print("[DuelListener] Ошибка цикла:", e)
+            time.sleep(interval_sec)
+
+    t = threading.Thread(target=_worker, name="OreoDuelChallengeListener", daemon=True)
+    t.start()
+
+
+# ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ И CALLBACK ДЛЯ BOT.PY ====================
+
+def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: str) -> bool:
+    """Возвращает True, если сообщение обработано модулем админки или дуэлей."""
+    chat_id = msg["chat"]["id"]
+    user = msg.get("from") or {}
+    user_id = user.get("id", "")
+    text_in = (msg.get("text") or "").strip()
+
+    register_bot_user(user)
+    process_duel_challenges_once(call_fn, webapp_url)
+
+    cmd = text_in.split()[0].lower().split("@")[0] if text_in else ""
+
+    if cmd == "/admin" or text_in == "👑 Админ-пульт":
+        _user_states.pop(user_id, None)
+        if not is_admin(user_id):
+            call_fn(
+                "sendMessage",
+                chat_id=chat_id,
+                text="⛔ <b>Доступ закрыт!</b> Эксклюзивный Админ-пульт доступен только основателю.",
+                parse_mode="HTML",
+            )
+            return True
+        send_card_fn(chat_id, admin_home_text(), admin_home_kb(webapp_url))
+        return True
+
+    if cmd == "/duel" or text_in in ("⚔️ Вызов 1v1", "⚔️ Дуэль"):
+        _user_states.pop(user_id, None)
+        text, kb = build_players_page(0, "duel", exclude_uid=str(user_id))
+        send_card_fn(chat_id, text, kb)
+        return True
+
+    # Проверка активного состояния ввода (поиск, ручной ввод ресурсов, турнира или ставки)
+    st = _user_states.get(user_id)
+    if not st or not text_in or text_in.startswith("/"):
+        return False
+
+    mode = st.get("mode")
+
+    if mode == "adm_search" and is_admin(user_id):
+        _user_states.pop(user_id, None)
+        text, kb = build_players_page(0, "adm", query=text_in)
+        call_fn("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+        return True
+
+    if mode == "adm_skin_search" and is_admin(user_id):
+        _user_states.pop(user_id, None)
+        text, kb = build_players_page(0, "adm_skin", query=text_in)
+        call_fn("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+        return True
+
+    if mode == "duel_search":
+        _user_states.pop(user_id, None)
+        text, kb = build_players_page(0, "duel", query=text_in, exclude_uid=str(user_id))
+        call_fn("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+        return True
+
+    if mode == "adm_manual_res" and is_admin(user_id):
+        target_uid = st["target_uid"]
+        res_key = st["res_key"]
+        raw_num = text_in.replace(" ", "").replace("_", "").replace(",", "")
+        act_mode = "add" if raw_num.startswith(("+", "-")) else "set"
+        try:
+            amount = int(float(raw_num))
+        except ValueError:
+            call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите целое число (например: <code>+50000</code> или <code>250000</code>).", parse_mode="HTML")
+            return True
+
+        _user_states.pop(user_id, None)
+        old_val, new_val, delta = apply_resource_change(target_uid, res_key, act_mode, amount)
+        meta = RESOURCE_META[res_key]
+        notify_player_resource(target_uid, res_key, delta, new_val, call_fn)
+        text, kb = build_player_resource_menu(target_uid)
+        call_fn(
+            "sendMessage",
+            chat_id=chat_id,
+            text=f"✅ <b>Баланс обновлён!</b> ({meta['label']}: <code>{fmt_num(old_val)}</code> → <code>{fmt_num(new_val)}</code>)\n\n" + text,
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+        return True
+
+    if mode == "adm_bank_manual" and is_admin(user_id):
+        raw_num = text_in.replace(" ", "").replace("_", "").replace(",", "")
+        try:
+            val = int(float(raw_num))
+        except ValueError:
+            call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите корректное число для Общего банка.", parse_mode="HTML")
+            return True
+        _user_states.pop(user_id, None)
+        set_common_bank(val)
+        text, kb = build_bank_menu()
+        call_fn("sendMessage", chat_id=chat_id, text="✅ <b>Общий банк обновлён!</b>\n\n" + text, parse_mode="HTML", reply_markup=kb)
+        return True
+
+    if mode in ("adm_tour_title", "adm_tour_time", "adm_tour_pool") and is_admin(user_id):
+        draft = st.get("draft") or {}
+        if mode == "adm_tour_title":
+            draft["title"] = text_in[:80]
+        elif mode == "adm_tour_time":
+            draft["start_time"] = text_in[:60]
+        elif mode == "adm_tour_pool":
+            try:
+                draft["prize_pool"] = max(0, int(float(text_in.replace(" ", "").replace(",", ""))))
+            except ValueError:
+                call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите сумму призового фонда числом.", parse_mode="HTML")
+                return True
+        _user_states[user_id] = {"mode": "adm_tour_draft", "draft": draft}
+        text, kb = build_tournament_draft_menu(draft)
+        call_fn("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+        return True
+
+    if mode == "duel_bet_manual":
+        opp_id = st["opponent_id"]
+        game = st["game"]
+        raw_num = text_in.replace(" ", "").replace("_", "").replace(",", "")
+        try:
+            bet = max(100, int(float(raw_num)))
+        except ValueError:
+            call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите ставку числом (минимум 100 коинов).", parse_mode="HTML")
+            return True
+        _user_states.pop(user_id, None)
+        text, kb = build_duel_setup_menu(str(user_id), opp_id, game, bet)
+        call_fn("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+        return True
+
+    return False
+
+
+def notify_player_resource(target_uid: str, res_key: str, delta: int, new_val: int, call_fn):
+    if not str(target_uid).isdigit():
+        return
+    meta = RESOURCE_META.get(res_key, RESOURCE_META["coins"])
+    sign = f"+{fmt_num(delta)}" if delta >= 0 else fmt_num(delta)
+    msg = (
+        "🎁 <b>Уведомление от Администрации ОРЕО!</b>\n\n"
+        f"Ваш баланс ресурса <b>{meta['label']}</b> изменён: <b>{sign} {meta['unit']}</b>\n"
+        f"📊 <b>Текущий баланс:</b> <code>{fmt_num(new_val)} {meta['unit']}</code>"
+    )
+    try:
+        call_fn("sendMessage", chat_id=int(target_uid), text=msg, parse_mode="HTML")
+    except Exception:
+        pass
+
+
+def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: str) -> bool:
+    """Возвращает True, если callback_query обработан модулем админки или дуэлей."""
+    data = cb.get("data") or ""
+    msg = cb.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    message_id = msg.get("message_id")
+    has_photo = bool(msg.get("photo"))
+    user = cb.get("from") or {}
+    user_id = user.get("id", "")
+
+    register_bot_user(user)
+    process_duel_challenges_once(call_fn, webapp_url)
+
+    if data == "noop":
+        return True
+
+    # --------- АДМИН-ПУЛЬТ ---------
+    if data.startswith("adm_"):
+        if not is_admin(user_id):
+            try:
+                call_fn("answerCallbackQuery", callback_query_id=cb["id"], text="⛔ Доступ только для основателя!", show_alert=True)
+            except Exception:
+                pass
+            return True
+
+        if data == "adm_home":
+            _user_states.pop(user_id, None)
+            edit_card_fn(chat_id, message_id, has_photo, admin_home_text(), admin_home_kb(webapp_url))
+            return True
+
+        if data == "adm_skins_home":
+            _user_states.pop(user_id, None)
+            text, kb = build_skins_admin_home()
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_skin_page:"):
+            page = int(data.split(":")[1] or 0)
+            text, kb = build_players_page(page, "adm_skin")
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data == "adm_skin_search":
+            _user_states[user_id] = {"mode": "adm_skin_search"}
+            edit_card_fn(
+                chat_id,
+                message_id,
+                has_photo,
+                "🔍 <b>ПОИСК ИГРОКА ДЛЯ ВЫДАЧИ СКИНА</b>\n\nОтправьте в чат <b>ник</b>, <b>@username</b> или <b>ID</b> игрока:",
+                {"inline_keyboard": [[{"text": "« Отмена", "callback_data": "adm_skins_home"}]]},
+            )
+            return True
+
+        if data.startswith("adm_skin_sel:"):
+            target_uid = data.split(":", 1)[1]
+            text, kb = build_player_skin_menu(target_uid)
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_skin_give:"):
+            _, target_uid, skin_id = data.split(":", 2)
+            ok, delivered = grant_exclusive_skin(target_uid, skin_id, call_fn, webapp_url)
+            meta = EXCLUSIVE_SKINS.get(skin_id, {"title": skin_id})
+            dm_note = "📩 Красивое уведомление доставлено в ЛС!" if delivered else "💾 Записано в Firebase (игрок увидит при входе)!"
+            text, kb = build_player_skin_menu(target_uid)
+            banner = f"✅ <b>Скин {meta['title']} выдан игроку <code>{html.escape(target_uid)}</code>!</b>\n{dm_note}\n\n"
+            edit_card_fn(chat_id, message_id, has_photo, banner + text, kb)
+            return True
+
+        if data.startswith("adm_players:") or data.startswith("adm_page:"):
+            page = int(data.split(":")[1] or 0)
+            text, kb = build_players_page(page, "adm")
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data == "adm_search":
+            _user_states[user_id] = {"mode": "adm_search"}
+            edit_card_fn(
+                chat_id,
+                message_id,
+                has_photo,
+                "🔍 <b>ПОИСК ИГРОКА</b>\n\nОтправьте в чат <b>ID</b>, <b>имя</b> или <b>@username</b> игрока:",
+                {"inline_keyboard": [[{"text": "« Отмена", "callback_data": "adm_players:0"}]]},
+            )
+            return True
+
+        if data.startswith("adm_sel:"):
+            target_uid = data.split(":", 1)[1]
+            text, kb = build_player_resource_menu(target_uid)
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_res:"):
+            _, target_uid, res_key = data.split(":", 2)
+            text, kb = build_resource_presets_menu(target_uid, res_key)
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_act:"):
+            _, target_uid, res_key, act_mode, amt_str = data.split(":", 4)
+            old_val, new_val, delta = apply_resource_change(target_uid, res_key, act_mode, int(amt_str))
+            notify_player_resource(target_uid, res_key, delta, new_val, call_fn)
+            meta = RESOURCE_META[res_key]
+            text, kb = build_resource_presets_menu(target_uid, res_key)
+            banner = f"✅ <b>Успешно!</b> {meta['label']}: <code>{fmt_num(old_val)}</code> → <code>{fmt_num(new_val)}</code>\n📩 Уведомление отправлено игроку в ЛС.\n\n"
+            edit_card_fn(chat_id, message_id, has_photo, banner + text, kb)
+            return True
+
+        if data.startswith("adm_manual:"):
+            _, target_uid, res_key = data.split(":", 2)
+            meta = RESOURCE_META[res_key]
+            _user_states[user_id] = {"mode": "adm_manual_res", "target_uid": target_uid, "res_key": res_key}
+            edit_card_fn(
+                chat_id,
+                message_id,
+                has_photo,
+                f"✏️ <b>РУЧНОЙ ВВОД: {meta['label']}</b>\n\n"
+                "Отправьте в чат число:\n"
+                "• <code>+50000</code> — чтобы прибавить к текущему балансу\n"
+                "• <code>250000</code> — чтобы установить точное значение",
+                {"inline_keyboard": [[{"text": "« Назад", "callback_data": f"adm_res:{target_uid}:{res_key}"}]]},
+            )
+            return True
+
+        if data == "adm_bank":
+            text, kb = build_bank_menu()
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_bank_act:"):
+            _, act_mode, val_str = data.split(":", 2)
+            cur = get_common_bank()
+            if act_mode == "default":
+                set_common_bank(PAVEL_BANK_DEFAULT)
+            else:
+                set_common_bank(cur + int(val_str))
+            text, kb = build_bank_menu()
+            edit_card_fn(chat_id, message_id, has_photo, "✅ <b>Банк обновлён!</b>\n\n" + text, kb)
+            return True
+
+        if data == "adm_bank_manual":
+            _user_states[user_id] = {"mode": "adm_bank_manual"}
+            edit_card_fn(
+                chat_id,
+                message_id,
+                has_photo,
+                "✏️ <b>ВВЕДИТЕ НОВУЮ СУММУ ОБЩЕГО БАНКА</b>\n\nОтправьте целое число коинов в чат:",
+                {"inline_keyboard": [[{"text": "« Отмена", "callback_data": "adm_bank"}]]},
+            )
+            return True
+
+        if data == "adm_tour_new":
+            st = _user_states.get(user_id) or {}
+            draft = st.get("draft") or {
+                "title": "Берёзовый Кубок ОРЕО",
+                "start_time": "Сегодня в 20:00 МСК",
+                "prize_pool": 10000000,
+            }
+            _user_states[user_id] = {"mode": "adm_tour_draft", "draft": draft}
+            text, kb = build_tournament_draft_menu(draft)
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_tour_time:"):
+            t_val = data.split(":", 1)[1]
+            draft = (_user_states.get(user_id) or {}).get("draft") or {}
+            draft["start_time"] = t_val
+            _user_states[user_id] = {"mode": "adm_tour_draft", "draft": draft}
+            text, kb = build_tournament_draft_menu(draft)
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_tour_pool:"):
+            p_val = int(data.split(":", 1)[1])
+            draft = (_user_states.get(user_id) or {}).get("draft") or {}
+            draft["prize_pool"] = p_val
+            _user_states[user_id] = {"mode": "adm_tour_draft", "draft": draft}
+            text, kb = build_tournament_draft_menu(draft)
+            edit_card_fn(chat_id, message_id, has_photo, text, kb)
+            return True
+
+        if data.startswith("adm_tour_set:"):
+            field = data.split(":", 1)[1]
+            draft = (_user_states.get(user_id) or {}).get("draft") or {}
+            mode_map = {"title": "adm_tour_title", "time": "adm_tour_time", "pool": "adm_tour_pool"}
+            prompt_map = {
+                "title": "✏️ Отправьте в чат <b>название турнира</b>:",
+                "time": "⏰ Отправьте в чат <b>время начала турнира</b> (например: <code>Сегодня в 21:30 МСК</code>):",
+                "pool": "💰 Отправьте в чат <b>сумму спонсорского фонда</b> из Общего банка:",
+            }
+            _user_states[user_id] = {"mode": mode_map[field], "draft": draft}
+            edit_card_fn(
+                chat_id,
+                message_id,
+                has_photo,
+                prompt_map[field],
+                {"inline_keyboard": [[{"text": "« Назад к турниру", "callback_data": "adm_tour_new"}]]},
+            )
+            return True
+
+        if data == "adm_tour_launch":
+            draft = (_user_states.get(user_id) or {}).get("draft") or {}
+            tour_obj, sent_cnt, rem_bank = launch_poker_tournament(draft, call_fn, webapp_url)
+            _user_states.pop(user_id, None)
+            table_url = f"{webapp_url}?mode=poker_tournament&tournament={urllib.parse.quote(tour_obj['id'])}"
+            summary = (
+                "🚀 <b>ТУРНИР СОЗДАН И РАЗОСЛАН ВСЕМ ИГРОКАМ!</b>\n\n"
+                f"🏆 <b>Название:</b> {html.escape(tour_obj['title'])}\n"
+                f"⏰ <b>Время:</b> {html.escape(tour_obj['startTime'])}\n"
+                f"💰 <b>Выделено из банка:</b> <code>{fmt_num(tour_obj['prizePool'])} 🪙</code>\n"
+                f"🏦 <b>Остаток Общего банка:</b> <code>{fmt_num(rem_bank)} 🪙</code>\n"
+                f"📨 <b>Доставлено приглашений в ЛС:</b> <b>{sent_cnt}</b>"
+            )
+            kb = {
+                "inline_keyboard": [
+                    [{"text": "🔥 Занять место за столом!", "web_app": {"url": table_url}}],
+                    [{"text": "👑 Назад в Админ-пульт", "callback_data": "adm_home"}],
+                ]
+            }
+            edit_card_fn(chat_id, message_id, has_photo, summary, kb)
+            return True
+
+        if data == "adm_duels":
+            raw = fb_get("duel_challenges") or {}
+            pending = [
+                v for v in (raw.values() if isinstance(raw, dict) else [])
+                if isinstance(v, dict) and v.get("status") == "pending"
+            ]
+            lines = [f"⚔️ <b>АКТИВНЫЕ ВЫЗОВЫ 1v1 ({len(pending)})</b>\n"]
+            for ch in pending[:10]:
+                lines.append(
+                    f"• {html.escape(str(ch.get('challengerName')))} vs {html.escape(str(ch.get('opponentName')))} "
+                    f"— <b>{fmt_num(ch.get('bet', 0))} 🪙</b> ({html.escape(str(ch.get('gameTitle', ch.get('game'))))})"
+                )
+            if not pending:
+                lines.append("Сейчас нет ожидающих вызовов.")
+            edit_card_fn(
+                chat_id,
+                message_id,
+                has_photo,
+                "\n".join(lines),
+                {"inline_keyboard": [[{"text": "« Назад в Админ-пульт", "callback_data": "adm_home"}]]},
+            )
+            return True
+
+    # --------- СИСТЕМА ВЫЗОВОВ 1v1 (ДЛЯ ВСЕХ ИГРОКОВ) ---------
+    if data == "duel_menu" or data.startswith("duel_page:"):
+        _user_states.pop(user_id, None)
+        page = int(data.split(":")[1]) if ":" in data else 0
+        text, kb = build_players_page(page, "duel", exclude_uid=str(user_id))
+        edit_card_fn(chat_id, message_id, has_photo, text, kb)
+        return True
+
+    if data == "duel_search":
+        _user_states[user_id] = {"mode": "duel_search"}
+        edit_card_fn(
+            chat_id,
+            message_id,
+            has_photo,
+            "🔍 <b>ПОИСК СОПЕРНИКА ДЛЯ ДУЭЛИ</b>\n\nОтправьте в чат <b>имя</b>, <b>@username</b> или <b>ID</b> игрока:",
+            {"inline_keyboard": [[{"text": "« Назад к списку", "callback_data": "duel_page:0"}]]},
+        )
+        return True
+
+    if data.startswith("duel_sel:"):
+        opp_id = data.split(":", 1)[1]
+        text, kb = build_duel_setup_menu(str(user_id), opp_id, "poker", 10000)
+        edit_card_fn(chat_id, message_id, has_photo, text, kb)
+        return True
+
+    if data.startswith("duel_cfg:"):
+        _, opp_id, game, bet_str = data.split(":", 3)
+        text, kb = build_duel_setup_menu(str(user_id), opp_id, game, int(bet_str))
+        edit_card_fn(chat_id, message_id, has_photo, text, kb)
+        return True
+
+    if data.startswith("duel_bet_manual:"):
+        _, opp_id, game = data.split(":", 2)
+        _user_states[user_id] = {"mode": "duel_bet_manual", "opponent_id": opp_id, "game": game}
+        edit_card_fn(
+            chat_id,
+            message_id,
+            has_photo,
+            "✏️ <b>ВВЕДИТЕ СТАВКУ НА ДУЭЛЬ</b>\n\nОтправьте в чат сумму ставки в коинах (минимум <code>100</code>):",
+            {"inline_keyboard": [[{"text": "« Назад", "callback_data": f"duel_cfg:{opp_id}:{game}:10000"}]]},
+        )
+        return True
+
+    if data.startswith("duel_send:"):
+        _, opp_id, game, bet_str = data.split(":", 3)
+        ok, err_msg, ch_data = create_duel_challenge(user, opp_id, game, int(bet_str), call_fn, webapp_url)
+        if not ok:
+            text, kb = build_duel_setup_menu(str(user_id), opp_id, game, int(bet_str))
+            edit_card_fn(chat_id, message_id, has_photo, f"{err_msg}\n\n{text}", kb)
+            return True
+
+        cid = ch_data["id"]
+        duel_url = f"{webapp_url}?duel={urllib.parse.quote(cid)}&game={urllib.parse.quote(game)}&bet={ch_data['bet']}"
+        sent_text = (
+            "⚔️ <b>ВЫЗОВ ОТПРАВЛЕН!</b>\n\n"
+            f"👤 <b>Соперник:</b> {html.escape(ch_data['opponentName'])}\n"
+            f"🎮 <b>Игра:</b> <b>{html.escape(ch_data['gameTitle'])}</b>\n"
+            f"💰 <b>Замороженная ставка:</b> <code>{fmt_num(ch_data['bet'])} 🪙</code>\n\n"
+            "Сопернику отправлено мгновенное уведомление в ЛС Telegram. Вы можете сразу зайти за стол или отменить вызов до его принятия:"
+        )
+        sent_kb = {
+            "inline_keyboard": [
+                [{"text": "🎮 Войти в комнату дуэли", "web_app": {"url": duel_url}}],
+                [{"text": "🚫 Отменить вызов и вернуть ставку", "callback_data": f"duel_cancel:{cid}"}],
+                [{"text": "« В главное меню", "callback_data": "tab_home"}],
+            ]
+        }
+        edit_card_fn(chat_id, message_id, has_photo, sent_text, sent_kb)
+        return True
+
+    if data.startswith("duel_decline:"):
+        cid = data.split(":", 1)[1]
+        ok, status_text = decline_or_cancel_duel(cid, str(user_id), call_fn, is_cancel=False)
+        edit_card_fn(
+            chat_id,
+            message_id,
+            has_photo,
+            status_text,
+            {"inline_keyboard": [[{"text": "⚔️ Бросить встречный вызов", "callback_data": "duel_menu"}]]},
+        )
+        return True
+
+    if data.startswith("duel_cancel:"):
+        cid = data.split(":", 1)[1]
+        ok, status_text = decline_or_cancel_duel(cid, str(user_id), call_fn, is_cancel=True)
+        edit_card_fn(
+            chat_id,
+            message_id,
+            has_photo,
+            status_text,
+            {"inline_keyboard": [[{"text": "⚔️ Выбрать другого соперника", "callback_data": "duel_menu"}]]},
+        )
+        return True
+
+    return False

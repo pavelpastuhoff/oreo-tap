@@ -542,6 +542,8 @@
   .wheel-odds .w-win { background: rgba(255,196,0,.2); color: #ffd740; border: 1px solid rgba(255,215,64,.4); }
   .wheel-odds .w-lose { background: rgba(255,59,92,.2); color: #ff8a9d; border: 1px solid rgba(255,59,92,.4); }
 </style>
+<link rel="stylesheet" href="birch_games.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 </head>
 <body>
 
@@ -579,6 +581,8 @@
 <div class="side left">
   <button class="round-btn" id="activeSkinChip">🍪</button>
   <button class="round-btn wheel-side-btn" id="wheelSideBtn">🎡<small>50/50</small></button>
+  <button class="round-btn" id="birchZoneBtn" title="Берёзовый Холдем и Шахматы">🃏<small style="font-size:9px;display:block">Игры</small></button>
+  <button class="round-btn" id="birchAdminBtn" title="Админ-консоль" hidden>👑<small style="font-size:9px;display:block">Админ</small></button>
 </div>
 <div class="side right">
   <button class="round-btn" id="camToggleBtn">📷<span class="hide" id="camStatusTxt">ВЫКЛ</span></button>
@@ -596,7 +600,7 @@
 <!-- Энергия -->
 <div class="energy-dock">
   <div class="energy" id="energyHudBox">
-    ⚡<div class="bar energy-bar"><i id="energyFill" style="width:100%"></i></div>
+    ⚡<div class="bar energy-bar" id="energy-bar"><i id="energyFill" style="width:100%"></i></div>
     <span id="energyTxt">500/500</span><span class="e-plus">+</span>
   </div>
   <div class="boost-chip" id="boostChip" style="display:none">🚀</div>
@@ -1011,6 +1015,7 @@
   let topLayerEl = null;
 
   function makeTopSVG(sk) {
+    if (sk && sk.customSvg) return sk.customSvg;
     return `
     <svg viewBox="0 0 200 200">
       <defs>
@@ -1070,6 +1075,7 @@
     if (topLayerEl) topLayerEl.innerHTML = makeTopSVG(sk);
     document.documentElement.style.setProperty('--glow-color', sk.glow);
     $('activeSkinChip').innerHTML = `${sk.icon}<small>×${sk.mult}</small>`;
+    if (window.BirchGames && window.BirchGames.onSkinChanged) window.BirchGames.onSkinChanged(state.equippedSkin);
   }
   applySkinVisuals();
 
@@ -1803,6 +1809,10 @@
   }
 
   function sparks(x, y) {
+    if (window.BirchGames && window.BirchGames.isExclusiveSkin && window.BirchGames.isExclusiveSkin(state.equippedSkin)) {
+      window.BirchGames.spawnParticles(state.equippedSkin, x, y);
+      return;
+    }
     const isGold = state.equippedSkin === 'gold' || state.equippedSkin === 'twix';
     for (let i = 0; i < 7; i++) {
       const s = document.createElement('div');
@@ -2880,7 +2890,30 @@
       tap(r.left + r.width / 2 + (Math.random() - .5) * 120, r.top + r.height / 2 + (Math.random() - .5) * 120, false);
     }
   });
+  window.OreoBridge = {
+    getState: () => state,
+    applyExternalState: (patch) => {
+      Object.assign(state, patch || {});
+      state.coins = roundCoin(state.coins);
+      count = Math.max(count, state.coins);
+      state.count = count;
+      save();
+      refreshHud();
+    },
+    save,
+    refreshHud,
+    applySkinVisuals,
+    SKINS,
+    CASES,
+    showToast,
+    showModal,
+    playerId,
+    playerName,
+    playerPhoto,
+    dbUrl: OREO_CONFIG.FIREBASE_DB_URL
+  };
 })();
 </script>
+<script src="birch_games.js"></script>
 </body>
 </html>

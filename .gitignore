@@ -1,9 +1,52 @@
+# --- Локальные файлы с зашитыми токенами бота ---
+bot.py
+netlify/
+
+# --- Переменные окружения, токены и секреты ---
+.env
+.env.*
+*.env
+!.env.example
+
+# --- Приватные ключи и конфиги Firebase / Google Cloud ---
+*firebase-adminsdk*.json
+serviceAccount*.json
+service-account*.json
+firebase-credentials*.json
+*credentials*.json
+*secret*.json
+*token*.json
+.firebaserc
+firebase-debug.log*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# --- Системные папки Python, кэши и виртуальные окружения ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.cache
+*.db
+*.sqlite
+*.sqlite3
+venv/
+.venv/
+env/
+
+# --- Инструменты разработки, Node/Netlify и ОС ---
 .aider*
-bot.py
-netlify/
-__pycache__/
-bot.py
-netlify/
-__pycache__/
-bot.py
-netlify/
+.gitignorepython
+patch.py
+node_modules/
+.netlify/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
