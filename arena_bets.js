@@ -411,16 +411,15 @@
     backdrop.innerHTML = `
       <div class="arena-bets-sheet" id="arenaBetsSheet">
         <div class="ab-sheet-grabber"></div>
-        <div class="ab-sheet-header">
+        <div class="ab-sheet-header ab-header">
           <div class="ab-sheet-title">
             <span>🔥 ПАРИ</span>
-            <span class="ab-tag">ARENA BETS</span>
           </div>
           <div class="ab-header-Controls">
-            <div class="ab-wallet-pill">🪙 <span id="abWalletCoins">0</span></div>
-            <button class="ab-icon-btn ab-clear-archive" id="abClearArchiveBtn" title="Очистить архив" style="display:none;width:auto;padding:0 8px;font-size:11px">🧹 Очистить архив</button>
-            <button class="ab-icon-btn ab-admin-add" id="abAdminToggleBtn" title="Создать событие" style="display:none">➕</button>
-            <button class="ab-icon-btn" id="abCloseOverlayBtn" title="Закрыть">✕</button>
+            <div class="ab-wallet-pill" id="abWalletPill" title="Ваш баланс коинов">🪙 <span id="abWalletCoins">0</span></div>
+            <button type="button" class="ab-icon-btn ab-clear-archive" id="abClearArchiveBtn" title="Очистить архив" style="display:none">🧹</button>
+            <button type="button" class="ab-icon-btn ab-admin-add" id="abAdminToggleBtn" title="Создать событие" style="display:none">➕ Создать</button>
+            <button type="button" class="ab-icon-btn" id="abCloseOverlayBtn" title="Закрыть">✕</button>
           </div>
         </div>
         <div class="ab-sheet-body" id="abSheetBody">
@@ -440,15 +439,20 @@
 
     const adminBtn = document.getElementById('abAdminToggleBtn');
     const clearBtn = document.getElementById('abClearArchiveBtn');
-    if (isAdminUser()) {
-      adminBtn.style.display = 'inline-flex';
-      clearBtn.style.display = 'inline-flex';
+    if (clearBtn) {
       clearBtn.onclick = () => adminClearArchive();
+    }
+    if (adminBtn) {
       adminBtn.onclick = () => {
+        if (!isAdminUser()) return;
         adminFormOpen = !adminFormOpen;
         bb(adminFormOpen ? 'admin_form_open' : 'admin_form_close');
         renderAdminCreateForm();
       };
+    }
+    if (isAdminUser()) {
+      if (adminBtn) adminBtn.style.display = 'inline-flex';
+      if (clearBtn) clearBtn.style.display = 'inline-flex';
     }
 
     const mainBtn = document.getElementById('arenaBetsOpenBtn');
@@ -458,8 +462,11 @@
   }
 
   function updateWalletHeader() {
+    const coins = getCoins();
     const el = document.getElementById('abWalletCoins');
-    if (el) el.textContent = fmtFull(getCoins());
+    if (el) el.textContent = fmtCompact(coins);
+    const pill = document.getElementById('abWalletPill');
+    if (pill) pill.title = `Баланс: ${fmtFull(coins)} 🪙`;
   }
 
   function updateMainCapsuleBadge() {
@@ -477,16 +484,19 @@
   function renderAdminCreateForm() {
     const box = document.getElementById('arenaAdminFormWrap');
     const adminBtn = document.getElementById('abAdminToggleBtn');
+    const clearBtn = document.getElementById('abClearArchiveBtn');
     if (!box) return;
 
     if (!isAdminUser()) {
       box.classList.remove('ab-show');
       box.innerHTML = '';
       if (adminBtn) adminBtn.style.display = 'none';
+      if (clearBtn) clearBtn.style.display = 'none';
       return;
     }
 
     if (adminBtn) adminBtn.style.display = 'inline-flex';
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
 
     if (!adminFormOpen) {
       box.classList.remove('ab-show');
@@ -981,18 +991,34 @@
         return (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
       });
 
+    const admin = isAdminUser();
+
     if (list.length === 0) {
       container.innerHTML = `
         <div class="ab-empty">
           <div class="ab-empty-ic">🎯</div>
           <b>Активных пари пока нет</b>
           <span>Скоро здесь появятся новые события!</span>
+          ${admin ? `<div style="margin-top:16px"><button type="button" class="ab-empty-create-btn" id="abEmptyCreateBtn">➕ Создать новое событие</button></div>` : ''}
         </div>
       `;
+      if (admin) {
+        const emptyCreateBtn = container.querySelector('#abEmptyCreateBtn');
+        if (emptyCreateBtn) {
+          emptyCreateBtn.onclick = () => {
+            adminFormOpen = true;
+            bb('admin_form_open_empty');
+            renderAdminCreateForm();
+            const formWrap = document.getElementById('arenaAdminFormWrap');
+            if (formWrap && formWrap.scrollIntoView) {
+              formWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          };
+        }
+      }
       return;
     }
 
-    const admin = isAdminUser();
     container.innerHTML = '';
 
     list.forEach(ev => {
