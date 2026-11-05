@@ -1262,7 +1262,26 @@
   }
 
   let t0 = performance.now();
+  let _mainRafId = 0;
+  let _mainRafRunning = false;
+  const _overlayPerfState = { birch: false, arena: false };
+
+  function isAnyMiniOverlayOpen() {
+    if (_overlayPerfState.birch || _overlayPerfState.arena) return true;
+    const bEl = document.getElementById('birchOverlay');
+    if (bEl && bEl.classList.contains('show')) return true;
+    const aEl = document.getElementById('arenaBetsBackdrop');
+    if (aEl && aEl.classList.contains('ab-open')) return true;
+    return false;
+  }
+
   function frame(now) {
+    if (isAnyMiniOverlayOpen()) {
+      _mainRafRunning = false;
+      _mainRafId = 0;
+      return;
+    }
+    _mainRafRunning = true;
     const dt = Math.min(.033, (now - t0) / 1000); t0 = now;
     [tiltX, tiltY, scale, spin, press].forEach(s => step(s, dt));
     const time = now / 1000;
@@ -1273,9 +1292,22 @@
       `translate3d(0, ${floatY + press.x * 14}px, 0) scale(${scale.x}) ` +
       `rotateX(${BASE_X + tiltX.x + idleRX}deg) rotateY(${tiltY.x}deg) rotateZ(${spin.x + idleRZ}deg)`;
     glow.style.opacity = .75 + Math.sin(time * 1.6) * .15 + Math.min(.5, Math.abs(scale.x - 1) * 4);
-    requestAnimationFrame(frame);
+    _mainRafId = requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  function startMainRafLoop() {
+    if (_mainRafRunning || isAnyMiniOverlayOpen()) return;
+    _mainRafRunning = true;
+    t0 = performance.now();
+    _mainRafId = requestAnimationFrame(frame);
+  }
+  function stopMainRafLoop() {
+    if (_mainRafId) {
+      cancelAnimationFrame(_mainRafId);
+      _mainRafId = 0;
+    }
+    _mainRafRunning = false;
+  }
+  startMainRafLoop();
 
   // ---------- КАМЕРА ПОЛЬЗОВАТЕЛЯ НА ФОНЕ С НЕОБЫЧНЫМИ ФИЛЬТРАМИ ----------
   const CAM_FILTERS = [
@@ -1361,7 +1393,7 @@
   let musicFadeTimer = null;
 
   function triggerMusicOnTap() {
-    if (musicMode === 'off') return;
+    if (musicMode === 'off' || isAnyMiniOverlayOpen()) return;
     if (bgMusic.paused) {
       bgMusic.volume = 0.78;
       bgMusic.play().catch(() => {});
@@ -1549,16 +1581,37 @@
       const myScore = isPavel ? 0 : roundCoin(Math.max(state.coins, count));
       // Сохраняем в облако только реальных игроков Telegram или тех, кто уже начал тапать (>0)
       if ((tgUser && tgUser.id) || myScore > 0 || isPavel) {
+        const nowTs = Date.now();
+        const curGems = Math.max(0, Math.round(Number(state.gems) || 0));
+        const curEnergy = Math.max(0, Math.round(Number(state.energy) || 500));
+        const curSticks = Math.max(0, Math.round(Number(state.sticks) || 0));
+        const curChopped = Math.max(0, Math.round(Number(state.choppedLogs) || 0));
+        const curSkin = state.equippedSkin || 'classic';
         await fetch(`${db}/players/${encodeURIComponent(playerId)}.json`, {
-          method: 'PUT',
+          method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: playerId,
             name: playerName,
+            username: (tgUser && tgUser.username) ? String(tgUser.username) : '',
             photo: playerPhoto || '',
             coins: myScore,
             taps: isPavel ? 0 : roundCoin(count),
-            skin: state.equippedSkin || 'classic',
+            count: isPavel ? 0 : roundCoin(count),
+            gems: curGems,
+            energy: curEnergy,
+            sticks: curSticks,
+            choppedLogs: curChopped,
+            skin: curSkin,
+            equippedSkin: curSkin,
+            wallet: {
+              coins: myScore,
+              gems: curGems,
+              energy: curEnergy,
+              sticks: curSticks,
+              choppedLogs: curChopped,
+              equippedSkin: curSkin
+            },
             streak: state.streakDays || 1,
             demoUsed: Boolean(state.demoUsed),
             economyVersion: OREO_CONFIG.ECONOMY_VERSION,
@@ -1569,7 +1622,8 @@
             vipUnlimitedEnergy: Boolean(state.vipUnlimitedEnergy),
             releaseWipeDone: state.releaseWipeDone || 0,
             adminResetId: state.adminResetId || 0,
-            ts: Date.now()
+            lastSeen: nowTs,
+            ts: nowTs
           })
         });
       }
@@ -1796,7 +1850,9 @@
   const voice = new Audio('assets/67.mp3');
   voice.preload = 'auto';
   function say67(times = 1) {
+    if (isAnyMiniOverlayOpen()) return;
     for (let k = 0; k < times; k++) setTimeout(() => {
+      if (isAnyMiniOverlayOpen()) return;
       try { const a = voice.cloneNode(); a.volume = 0.9; a.play().catch(() => {}); } catch (e) {}
     }, k * 380);
   }
@@ -1805,6 +1861,7 @@
   oreoSnd.preload = 'auto';
   let oreoAt = 0;
   function sayOreo(force) {
+    if (isAnyMiniOverlayOpen()) return;
     const now = performance.now();
     if (!force && now - oreoAt < 4000) return;
     oreoAt = now;
@@ -2014,6 +2071,9 @@
   }
 
   function tap(x, y, auto) {
+    if (isAnyMiniOverlayOpen()) {
+      return;
+    }
     if (auto && (isSleeping || document.hidden || (performance.now() - lastRealTapAt > AFK_SLEEP_MS))) {
       return;
     }
@@ -2138,7 +2198,7 @@
       refreshHud();
       return;
     }
-    if (document.hidden || isSleeping) {
+    if (document.hidden || isSleeping || isAnyMiniOverlayOpen()) {
       autoAcc = 0;
       return;
     }
@@ -2819,8 +2879,15 @@
       <div style="font-size:11.5px;opacity:.85;line-height:1.35">
         Спонсор фонда: <b>Pavel</b> (передал все свои коины в банк и вышел из гонки за рейтингом, чтобы разыгрывать призы среди игроков в будущих ивентах!)
       </div>
+      ${String(playerId) === PAVEL_ID ? `<button class="big-btn tg" id="openAdminInactiveFundBtn" style="margin-top:10px;width:100%">🎰 Фонд активности (Неактивные &gt; 7 дней)</button>` : ''}
     `;
     body.appendChild(bankCard);
+    const admFundBtn = bankCard.querySelector('#openAdminInactiveFundBtn');
+    if (admFundBtn) {
+      admFundBtn.onclick = () => {
+        if (window.BirchGames && window.BirchGames.openZone) window.BirchGames.openZone('admin');
+      };
+    }
 
     const card = document.createElement('div');
     card.className = 'league-card';
@@ -3091,16 +3158,43 @@
       tap(r.left + r.width / 2 + (Math.random() - .5) * 120, r.top + r.height / 2 + (Math.random() - .5) * 120, false);
     }
   });
+  window.OreoPerf = {
+    setOverlay: (key, isOpen) => {
+      if (key) _overlayPerfState[key] = Boolean(isOpen);
+      if (isAnyMiniOverlayOpen()) {
+        clearTimeout(musicFadeTimer);
+        try { bgMusic.pause(); } catch (e) {}
+        try { voice.pause(); } catch (e) {}
+        try { oreoSnd.pause(); } catch (e) {}
+        autoAcc = 0;
+        stopMainRafLoop();
+      } else {
+        startMainRafLoop();
+        if (musicMode === 'on' && bgMusic.paused) {
+          bgMusic.play().catch(() => {});
+        }
+      }
+    },
+    isOverlayOpen: isAnyMiniOverlayOpen,
+    pauseMainLoop: stopMainRafLoop,
+    resumeMainLoop: startMainRafLoop
+  };
+
   window.OreoBridge = {
     getState: () => state,
     applyExternalState: (patch) => {
       Object.assign(state, patch || {});
       state.coins = roundCoin(state.coins);
+      if (patch && patch.gems !== undefined) state.gems = Math.max(0, Math.round(Number(patch.gems) || 0));
+      if (patch && patch.energy !== undefined) state.energy = Math.max(0, Math.round(Number(patch.energy) || 0));
+      if (patch && patch.sticks !== undefined) state.sticks = Math.max(0, Math.round(Number(patch.sticks) || 0));
+      if (patch && patch.choppedLogs !== undefined) state.choppedLogs = Math.max(0, Math.round(Number(patch.choppedLogs) || 0));
       count = Math.max(count, state.coins);
       state.count = count;
       save();
       refreshHud();
     },
+    setOverlayActive: (key, isOpen) => window.OreoPerf.setOverlay(key, isOpen),
     save,
     refreshHud,
     applySkinVisuals,

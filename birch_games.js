@@ -62,17 +62,64 @@
   function updateLocalWallet(patch) {
     const b = getBridge();
     const st = getLocalState();
-    if (patch.coins !== undefined) st.coins = Math.max(0, Math.round(patch.coins));
-    if (patch.gems !== undefined) st.gems = Math.max(0, Math.round(patch.gems));
-    if (patch.energy !== undefined) st.energy = Math.max(0, Math.round(patch.energy));
-    if (patch.sticks !== undefined) st.sticks = Math.max(0, Math.round(patch.sticks));
-    if (patch.choppedLogs !== undefined) st.choppedLogs = Math.max(0, Math.round(patch.choppedLogs));
+    if (patch.coins !== undefined) st.coins = Math.max(0, Math.round(Number(patch.coins) || 0));
+    if (patch.gems !== undefined) st.gems = Math.max(0, Math.round(Number(patch.gems) || 0));
+    if (patch.energy !== undefined) st.energy = Math.max(0, Math.round(Number(patch.energy) || 0));
+    if (patch.sticks !== undefined) st.sticks = Math.max(0, Math.round(Number(patch.sticks) || 0));
+    if (patch.choppedLogs !== undefined) st.choppedLogs = Math.max(0, Math.round(Number(patch.choppedLogs) || 0));
+    if (patch.equippedSkin !== undefined) st.equippedSkin = String(patch.equippedSkin || 'classic');
+    if (!st.wallet || typeof st.wallet !== 'object') st.wallet = {};
+    st.wallet.coins = Math.max(0, Math.round(Number(st.coins) || 0));
+    st.wallet.gems = Math.max(0, Math.round(Number(st.gems) || 0));
+    st.wallet.energy = Math.max(0, Math.round(Number(st.energy) || 500));
+    st.wallet.sticks = Math.max(0, Math.round(Number(st.sticks) || 0));
+    st.wallet.choppedLogs = Math.max(0, Math.round(Number(st.choppedLogs) || 0));
+    st.wallet.equippedSkin = st.equippedSkin || 'classic';
+    try { localStorage.setItem('oreo-tap-save-v2', JSON.stringify(st)); } catch (e) {}
     if (b && b.applyExternalState) {
       b.applyExternalState(st);
-    } else {
-      localStorage.setItem('oreo-tap-save-v2', JSON.stringify(st));
     }
     refreshHeaderWallet();
+  }
+
+  async function syncMyWalletToFirebase(extraPatch = {}) {
+    const me = getMe();
+    if (!me || !me.id) return;
+    const st = getLocalState();
+    const now = Date.now();
+    const coins = Math.max(0, Math.round(Number(st.coins) || 0));
+    const gems = Math.max(0, Math.round(Number(st.gems) || 0));
+    const energy = Math.max(0, Math.round(Number(st.energy !== undefined ? st.energy : 500) || 0));
+    const sticks = Math.max(0, Math.round(Number(st.sticks) || 0));
+    const choppedLogs = Math.max(0, Math.round(Number(st.choppedLogs) || 0));
+    const equippedSkin = String(st.equippedSkin || 'classic');
+    const payload = Object.assign({
+      id: me.id,
+      name: me.name,
+      username: me.username || '',
+      photo: me.photo || '',
+      coins,
+      taps: coins,
+      count: coins,
+      gems,
+      energy,
+      sticks,
+      choppedLogs,
+      skin: equippedSkin,
+      equippedSkin,
+      lastSeen: now,
+      ts: now,
+      wallet: {
+        coins,
+        gems,
+        energy,
+        sticks,
+        choppedLogs,
+        equippedSkin,
+        lastSeen: now
+      }
+    }, extraPatch || {});
+    await fbPatch(`players/${encodeURIComponent(me.id)}`, payload);
   }
 
   function toast(msg) {
@@ -398,7 +445,202 @@
   let _livePokerState = null;
   let _liveChessState = null;
 
+  function ensureGlobalPatchStyles() {
+    if (document.getElementById('bgGlobalPatchCss')) return;
+    const st = document.createElement('style');
+    st.id = 'bgGlobalPatchCss';
+    st.textContent = `
+      /* Пункт 8: Увеличение карт, банка, стеков и кнопок действий Покера на 25-30% для экранов смартфонов */
+      .bg-pot {
+        font-size: 15.5px !important;
+        padding: 5px 15px !important;
+        font-weight: 900 !important;
+      }
+      .bg-stage {
+        font-size: 12.5px !important;
+        padding: 3px 12px !important;
+      }
+      .bg-board {
+        grid-template-columns: repeat(5, 49px) !important;
+        gap: 6px !important;
+        min-height: 68px !important;
+      }
+      .bg-card {
+        width: 40px !important;
+        height: 56px !important;
+        border-radius: 7.5px !important;
+      }
+      .bg-card b {
+        font-size: 15.5px !important;
+        letter-spacing: -0.4px !important;
+      }
+      .bg-card i {
+        font-size: 16px !important;
+        margin-top: 1px !important;
+      }
+      .bg-seat.me .bg-card {
+        width: 43px !important;
+        height: 60px !important;
+      }
+      .bg-seat.me .bg-card b {
+        font-size: 16.5px !important;
+      }
+      .bg-seat.me .bg-card i {
+        font-size: 17px !important;
+      }
+      .bg-card.big {
+        width: 49px !important;
+        height: 67px !important;
+        border-radius: 8.5px !important;
+      }
+      .bg-card.big b {
+        font-size: 18px !important;
+      }
+      .bg-card.big i {
+        font-size: 19px !important;
+      }
+      .bg-scards {
+        min-height: 56px !important;
+        gap: 4px !important;
+      }
+      .bg-seat {
+        width: 132px !important;
+      }
+      .bg-sname {
+        font-size: 12px !important;
+      }
+      .bg-sstack {
+        font-size: 12.5px !important;
+        font-weight: 900 !important;
+      }
+      .bg-sstatus {
+        font-size: 10.5px !important;
+      }
+      .bg-sbet {
+        font-size: 11.5px !important;
+        padding: 2px 10px !important;
+      }
+      .bg-act-grid {
+        gap: 8px !important;
+      }
+      .bg-act-grid .bg-btn {
+        padding: 13px 7px !important;
+        font-size: 14px !important;
+        font-weight: 900 !important;
+        border-radius: 12px !important;
+      }
+
+      /* Встроенный мини-чат в Покере и Шахматах + всплывающее облачко */
+      .bg-chat-drawer {
+        margin-top: 8px;
+        padding: 10px;
+        border-radius: 14px;
+        background: rgba(16, 23, 18, 0.94);
+        border: 1.5px solid rgba(212, 175, 105, 0.38);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.55);
+      }
+      .bg-chat-feed {
+        max-height: 110px;
+        overflow-y: auto;
+        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-bottom: 8px;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: rgba(8, 12, 9, 0.65);
+      }
+      .bg-chat-msg {
+        line-height: 1.3;
+        word-break: break-word;
+      }
+      .bg-chat-msg b {
+        color: #ffd740;
+      }
+      .bg-chat-quick {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-bottom: 7px;
+      }
+      .bg-chat-qbtn {
+        padding: 5px 8px;
+        border-radius: 99px;
+        border: 1px solid rgba(212, 175, 105, 0.35);
+        background: rgba(34, 46, 36, 0.85);
+        color: #f3e2b3;
+        font-size: 11.5px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .bg-chat-qbtn:active {
+        transform: scale(0.95);
+      }
+      .bg-chat-bubble-toast {
+        position: fixed;
+        left: 50%;
+        top: 68px;
+        transform: translateX(-50%);
+        z-index: 99999;
+        background: linear-gradient(135deg, rgba(25, 38, 28, 0.97), rgba(16, 24, 18, 0.97));
+        border: 1.5px solid #4cd964;
+        color: #fff;
+        padding: 8px 14px;
+        border-radius: 99px;
+        font-size: 13px;
+        font-weight: 800;
+        box-shadow: 0 8px 26px rgba(0,0,0,0.65);
+        pointer-events: none;
+        max-width: 90vw;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .bg-chat-badge {
+        display: inline-block;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 99px;
+        background: #ff3b30;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 900;
+        line-height: 16px;
+        text-align: center;
+        margin-left: 4px;
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  async function leaveCurrentGameIfAny() {
+    if (!_subView) return;
+    const prev = { ..._subView };
+    _subView = null;
+    if (prev.type === 'poker' && prev.id) {
+      await leavePokerTable(prev.id, Boolean(prev.isTournament));
+    } else if (prev.type === 'chess' && prev.id) {
+      await leaveChessMatchIfNeeded(prev.id);
+    }
+  }
+
+  async function bgBackBtn() {
+    pushTelemetryAction('bg_back_btn');
+    await leaveCurrentGameIfAny();
+    renderActiveView();
+  }
+
+  async function switchTab(nextTab) {
+    pushTelemetryAction(`switch_tab:${nextTab}`);
+    await leaveCurrentGameIfAny();
+    _activeTab = nextTab || 'tournament';
+    renderActiveView();
+  }
+
   function ensureOverlay() {
+    ensureGlobalPatchStyles();
     if (_overlay) return _overlay;
     const el = document.createElement('div');
     el.className = 'bg-overlay';
@@ -446,16 +688,9 @@
     _overlay = el;
 
     el.querySelector('#bgCloseBtn').onclick = () => closeZone();
-    el.querySelector('#bgBackBtn').onclick = () => {
-      _subView = null;
-      renderActiveView();
-    };
+    el.querySelector('#bgBackBtn').onclick = () => bgBackBtn();
     el.querySelectorAll('.bg-tab').forEach(btn => {
-      btn.onclick = () => {
-        _subView = null;
-        _activeTab = btn.dataset.bgtab;
-        renderActiveView();
-      };
+      btn.onclick = () => switchTab(btn.dataset.bgtab);
     });
     return el;
   }
@@ -485,15 +720,18 @@
     _activeTab = tab;
     _subView = sub;
     _overlay.classList.add('show');
+    try { if (window.OreoPerf && window.OreoPerf.setOverlay) window.OreoPerf.setOverlay('birch', true); } catch (e) {}
     pushTelemetryAction(`open_zone:${sub ? `${sub.type}:${sub.id}` : tab}`);
     refreshHeaderWallet();
     renderActiveView();
   }
 
-  function closeZone() {
+  async function closeZone() {
+    await leaveCurrentGameIfAny();
     clearViewWatchers();
     if (_turnInterval) { clearInterval(_turnInterval); _turnInterval = null; }
     if (_overlay) _overlay.classList.remove('show');
+    try { if (window.OreoPerf && window.OreoPerf.setOverlay) window.OreoPerf.setOverlay('birch', false); } catch (e) {}
     pushTelemetryAction('close_zone');
   }
 
@@ -564,8 +802,59 @@
     else renderAdminTourSub(sub);
   }
 
+  const INACTIVE_THRESHOLD_MS = 7 * 86400000;
+  let _admInactiveRaffleLogHtml = '';
+  const _admUncheckedInactive = new Set();
+
+  function extractPlayerNormalized(uid, raw) {
+    const p = (raw && typeof raw === 'object') ? raw : {};
+    const w = (p.wallet && typeof p.wallet === 'object') ? p.wallet : {};
+    const pickNum = (k, fallback) => {
+      if (p[k] !== undefined && p[k] !== null && p[k] !== '') return Math.max(0, Math.round(Number(p[k]) || 0));
+      if (w[k] !== undefined && w[k] !== null && w[k] !== '') return Math.max(0, Math.round(Number(w[k]) || 0));
+      return fallback;
+    };
+    const coins = pickNum('coins', pickNum('taps', pickNum('count', 0)));
+    const gems = pickNum('gems', 5);
+    const energy = pickNum('energy', 500);
+    const sticks = pickNum('sticks', 0);
+    const choppedLogs = pickNum('choppedLogs', 0);
+    const equippedSkin = String(p.equippedSkin || p.skin || w.equippedSkin || w.skin || 'classic');
+    const lastSeen = Number(p.lastSeen || p.ts || p.updatedAt || w.lastSeen || w.ts || 0);
+    return Object.assign({}, p, {
+      id: String(uid || p.id || ''),
+      name: String(p.name || uid || 'Тапер'),
+      username: String(p.username || ''),
+      coins,
+      gems,
+      energy,
+      sticks,
+      choppedLogs,
+      equippedSkin,
+      lastSeen
+    });
+  }
+
+  function formatLastSeenBadge(lastSeenTs) {
+    const ts = Number(lastSeenTs) || 0;
+    if (!ts) return '⏳ нет данных (>7д)';
+    const diff = Math.max(0, Date.now() - ts);
+    const mins = Math.floor(diff / 60000);
+    if (mins < 5) return '🟢 онлайн';
+    if (mins < 60) return `🕒 ${mins} мин. назад`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `🕒 ${hours} ч. назад`;
+    const days = Math.floor(hours / 24);
+    return `${days >= 7 ? '🔴' : '🕒'} ${days} дн. назад`;
+  }
+
   function renderAdminPlayersSub(sub) {
     sub.innerHTML = `
+      <div class="bg-sec" id="admInactiveFundSec">
+        <h3>🎰 Фонд активности (Неактивные &gt; 7 дней)</h3>
+        <div id="admInactiveFundBox">Анализ активности игроков...</div>
+        <div id="admInactiveRaffleLog">${_admInactiveRaffleLogHtml}</div>
+      </div>
       <div class="bg-sec">
         <h3>🔍 Live-поиск и мгновенная выдача ресурсов</h3>
         <input class="bg-input" id="admSearchInp" placeholder="Поиск по имени, ID или @username..." value="${esc(_admSearchQuery)}">
@@ -574,14 +863,158 @@
     `;
     const inp = sub.querySelector('#admSearchInp');
     let latestPlayers = {};
-    inp.oninput = () => { _admSearchQuery = inp.value.trim(); drawPlayers(latestPlayers); };
+    inp.oninput = () => { _admSearchQuery = inp.value.trim(); drawPlayers(latestPlayers, true); };
 
-    function drawPlayers(data) {
+    function drawPlayers(data, forceRender = false) {
       latestPlayers = data || {};
+      const activeEl = document.activeElement;
+      if (!forceRender && activeEl && sub.contains(activeEl) && activeEl.id !== 'admSearchInp' && ['INPUT', 'SELECT', 'TEXTAREA'].includes(activeEl.tagName)) {
+        return;
+      }
+
       const box = sub.querySelector('#admPlayersList');
+      const fundBox = sub.querySelector('#admInactiveFundBox');
       if (!box) return;
-      const arr = Object.entries(latestPlayers).map(([k, v]) => Object.assign({ id: k }, v || {}));
+      const now = Date.now();
+      const arr = Object.entries(latestPlayers).map(([k, v]) => extractPlayerNormalized(k, v));
       arr.sort((a, b) => (Number(b.coins) || 0) - (Number(a.coins) || 0));
+
+      // --- Блок «Фонд активности (Неактивные > 7 дней)» ---
+      if (fundBox) {
+        const inactiveCandidates = arr.filter(p =>
+          p.id &&
+          String(p.id) !== MY_ADMIN_ID &&
+          !p.excludedFromLeaderboard &&
+          p.coins > 0 &&
+          (!p.lastSeen || (now - p.lastSeen > INACTIVE_THRESHOLD_MS))
+        );
+        const activeThisWeek = arr.filter(p =>
+          p.id &&
+          String(p.id) !== MY_ADMIN_ID &&
+          !p.excludedFromLeaderboard &&
+          p.lastSeen > 0 &&
+          (now - p.lastSeen <= INACTIVE_THRESHOLD_MS)
+        );
+        const selectedInactive = inactiveCandidates.filter(p => !_admUncheckedInactive.has(String(p.id)));
+        const totalInactiveBank = selectedInactive.reduce((s, p) => s + p.coins, 0);
+
+        fundBox.innerHTML = `
+          <div class="bg-muted" style="margin-bottom:8px">
+            Неактивных (&gt; 7 дней с балансом &gt; 0): <b>${inactiveCandidates.length}</b> •
+            Выбрано к розыгрышу: <b style="color:#ffd740">${fmt(totalInactiveBank)} 🪙</b> •
+            Активных таперов недели: <b style="color:#4cd964">${activeThisWeek.length}</b>
+          </div>
+          ${inactiveCandidates.length ? `
+            <div style="max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin-bottom:8px">
+              ${inactiveCandidates.map(p => {
+                const checked = !_admUncheckedInactive.has(String(p.id));
+                const daysOff = p.lastSeen ? Math.floor((now - p.lastSeen) / 86400000) : 7;
+                return `
+                  <label class="bg-item" style="padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:8px">
+                    <input type="checkbox" data-inact-chk="${esc(p.id)}" ${checked ? 'checked' : ''}>
+                    <div class="grow">
+                      <b>${esc(p.name)} ${p.username ? `<small>@${esc(p.username)}</small>` : ''}</b>
+                      <small>ID: ${esc(p.id)} • Оффлайн: ${daysOff}+ дн.</small>
+                    </div>
+                    <span class="bg-chip gold">🪙 ${fmt(p.coins)}</span>
+                  </label>
+                `;
+              }).join('')}
+            </div>
+            <div class="bg-row" style="gap:8px">
+              <button class="bg-btn sm wood" id="admWarnInactiveBtn">🔔 Напомнить (${selectedInactive.length})</button>
+              <button class="bg-btn sm green" id="admRaffleInactiveBtn">🎰 Разыграть банк неактивных (${fmt(totalInactiveBank)} 🪙)</button>
+            </div>
+          ` : `<div class="bg-muted">✨ Сейчас нет неактивных игроков (&gt; 7 дней оффлайн) с ненулевым балансом.</div>`}
+        `;
+
+        fundBox.querySelectorAll('[data-inact-chk]').forEach(chk => {
+          chk.onchange = () => {
+            const id = chk.getAttribute('data-inact-chk');
+            if (chk.checked) _admUncheckedInactive.delete(id);
+            else _admUncheckedInactive.add(id);
+            drawPlayers(latestPlayers, true);
+          };
+        });
+
+        const warnBtn = fundBox.querySelector('#admWarnInactiveBtn');
+        if (warnBtn) {
+          warnBtn.onclick = async () => {
+            if (!selectedInactive.length) return toast('⚠️ Выберите хотя бы одного неактивного игрока');
+            const ts = Date.now();
+            const warnPayload = {};
+            selectedInactive.forEach(p => {
+              warnPayload[p.id] = {
+                userId: p.id,
+                name: p.name,
+                username: p.username || '',
+                coins: p.coins,
+                warnedAt: ts,
+                message: `🔔 Привет, ${p.name}! Ты не заходил в ОРЕО67 более 7 дней. Зайди и тапни, иначе твой банк (${fmt(p.coins)} 🪙) будет разыгран среди активных игроков недели!`
+              };
+            });
+            await fbPatch('inactive_warnings', warnPayload);
+            pushTelemetryAction(`adm_warn_inactive:${selectedInactive.length}`);
+            toast(`🔔 Отправлено напоминание ${selectedInactive.length} неактивным игрокам!`);
+          };
+        }
+
+        const raffleBtn = fundBox.querySelector('#admRaffleInactiveBtn');
+        if (raffleBtn) {
+          raffleBtn.onclick = async () => {
+            if (!selectedInactive.length || totalInactiveBank <= 0) {
+              return toast('⚠️ Нет выбранного банка неактивных для розыгрыша');
+            }
+            const recipients = activeThisWeek.length
+              ? activeThisWeek
+              : arr.filter(p => p.id && String(p.id) !== MY_ADMIN_ID && !p.excludedFromLeaderboard && !selectedInactive.some(si => si.id === p.id));
+            if (!recipients.length) {
+              return toast('⚠️ Нет активных игроков для получения банка');
+            }
+            raffleBtn.disabled = true;
+            raffleBtn.textContent = '⏳ Розыгрыш банка...';
+            try {
+              const logEntries = [];
+              const ts = Date.now();
+              for (const donor of selectedInactive) {
+                const confiscated = donor.coins;
+                if (confiscated <= 0) continue;
+                // Обнуляем коины у неактивного игрока
+                await adminModifyPlayerResource(donor.id, 'coins', 'reset', 0);
+                // Выбираем случайного активного тапера недели (или распределяем по весу активности)
+                const luckyWinner = recipients[Math.floor(Math.random() * recipients.length)];
+                await adminModifyPlayerResource(luckyWinner.id, 'coins', 'add', confiscated);
+                logEntries.push({
+                  fromId: donor.id,
+                  fromName: donor.name,
+                  toId: luckyWinner.id,
+                  toName: luckyWinner.name,
+                  amount: confiscated,
+                  ts
+                });
+              }
+              await fbPut(`inactive_raffle_logs/${ts}`, {
+                ts,
+                totalBank: totalInactiveBank,
+                entries: logEntries
+              });
+              _admInactiveRaffleLogHtml = `
+                <div class="bg-result" style="margin-top:8px;text-align:left">
+                  <h4>🎉 Итоги розыгрыша банка неактивных (${fmt(totalInactiveBank)} 🪙):</h4>
+                  ${logEntries.map(e => `<div style="font-size:12px;margin-top:3px">• Банк <b>${esc(e.fromName)}</b> (${fmt(e.amount)} 🪙) → получил активный тапер <b>${esc(e.toName)}</b> (ID ${esc(e.toId)})!</div>`).join('')}
+                </div>
+              `;
+              const logEl = sub.querySelector('#admInactiveRaffleLog');
+              if (logEl) logEl.innerHTML = _admInactiveRaffleLogHtml;
+              pushTelemetryAction(`adm_raffle_inactive:${logEntries.length}:${totalInactiveBank}`);
+              toast(`🎰 Разыграно ${fmt(totalInactiveBank)} 🪙 среди активных таперов!`);
+            } finally {
+              raffleBtn.disabled = false;
+            }
+          };
+        }
+      }
+
       const q = _admSearchQuery.toLowerCase().replace(/^@/, '');
       const filtered = q ? arr.filter(p =>
         String(p.name || '').toLowerCase().includes(q) ||
@@ -594,6 +1027,8 @@
         return;
       }
 
+      const skinOptions = ['classic', 'gold', 'berry', 'mint', 'cyber', 'lava', 'diamond', 'twix', 'shushik', 'airochai', 'denis_lykasov'];
+
       box.innerHTML = filtered.slice(0, 30).map(p => {
         const uid = String(p.id);
         const isSel = _admSelectedUid === uid;
@@ -601,25 +1036,26 @@
           <div class="bg-item ${isSel ? 'sel' : ''}" data-uid="${esc(uid)}" style="flex-direction:column;align-items:stretch">
             <div class="bg-row sp" style="cursor:pointer" data-pick="${esc(uid)}">
               <div>
-                <b>👤 ${esc(p.name || uid)} ${p.username ? `<small>@${esc(p.username)}</small>` : ''}</b>
-                <small>ID: ${esc(uid)} • 🪓 Чурки: ${fmt(p.choppedLogs || 0)}</small>
+                <b>👤 ${esc(p.name || uid)} ${p.username ? `<small>@${esc(p.username)}</small>` : ''}${shushikInlineBadgesHtml(uid, p.equippedSkin)}</b>
+                <small>ID: ${esc(uid)} • Скин: <b>${esc(p.equippedSkin)}</b> • ${formatLastSeenBadge(p.lastSeen)}</small>
               </div>
-              <span class="bg-chip gold">🪙 ${fmt(p.coins || 0)}</span>
+              <span class="bg-chip gold">🪙 ${fmt(p.coins)}</span>
             </div>
             <div class="bg-adm-grid">
-              <div>🪙 ${fmt(p.coins || 0)}</div>
-              <div>💎 ${fmt(p.gems || 0)}</div>
-              <div>⚡ ${fmt(p.energy || 500)}</div>
-              <div>🪵 ${fmt(p.sticks || 0)}</div>
+              <div>🪙 ${fmt(p.coins)}</div>
+              <div>💎 ${fmt(p.gems)}</div>
+              <div>⚡ ${fmt(p.energy)}</div>
+              <div>🪵 ${fmt(p.sticks)}</div>
             </div>
             ${isSel ? `
               <div class="bg-adm-res">
-                ${['coins:🪙 Коины', 'gems:💎 Алмазики', 'energy:⚡ Энергия', 'sticks:🪵 Палочки'].map(pair => {
+                ${['coins:🪙 Коины', 'gems:💎 Кристаллы', 'energy:⚡ Энергия', 'sticks:🪵 Палочки'].map(pair => {
                   const [rk, rlabel] = pair.split(':');
+                  const curVal = p[rk] || 0;
                   return `
-                    <div class="bg-row sp" style="margin-top:6px">
-                      <small><b>${rlabel}</b></small>
-                      <div class="bg-row">
+                    <div class="bg-row sp" style="margin-top:6px;flex-wrap:wrap;gap:4px">
+                      <small><b>${rlabel}: ${fmt(curVal)}</b></small>
+                      <div class="bg-row" style="gap:4px">
                         <button class="bg-btn sm green" data-act="${esc(uid)}:${rk}:add:10000">+10k</button>
                         <button class="bg-btn sm green" data-act="${esc(uid)}:${rk}:add:100000">+100k</button>
                         <button class="bg-btn sm green" data-act="${esc(uid)}:${rk}:add:1000000">+1M</button>
@@ -629,6 +1065,18 @@
                     </div>
                   `;
                 }).join('')}
+                <div style="margin-top:10px;padding-top:8px;border-top:1px dashed rgba(212,175,105,0.28);display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
+                  <label style="font-size:11px">🪙 Коины:<input type="number" class="bg-input" data-edit-field="coins" value="${p.coins}"></label>
+                  <label style="font-size:11px">💎 Кристаллы:<input type="number" class="bg-input" data-edit-field="gems" value="${p.gems}"></label>
+                  <label style="font-size:11px">⚡ Энергия:<input type="number" class="bg-input" data-edit-field="energy" value="${p.energy}"></label>
+                  <label style="font-size:11px">🪵 Палочки:<input type="number" class="bg-input" data-edit-field="sticks" value="${p.sticks}"></label>
+                  <label style="font-size:11px;grid-column:span 2">🎭 Скин (equippedSkin):
+                    <select class="bg-input" data-edit-field="equippedSkin">
+                      ${skinOptions.map(sk => `<option value="${sk}" ${p.equippedSkin === sk ? 'selected' : ''}>${sk}</option>`).join('')}
+                    </select>
+                  </label>
+                  <button class="bg-btn green" data-save-direct="${esc(uid)}" style="grid-column:span 2">💾 Сохранить значения игрока</button>
+                </div>
               </div>
             ` : ''}
           </div>
@@ -639,7 +1087,7 @@
         el.onclick = () => {
           const u = el.getAttribute('data-pick');
           _admSelectedUid = (_admSelectedUid === u) ? '' : u;
-          drawPlayers(latestPlayers);
+          drawPlayers(latestPlayers, true);
         };
       });
 
@@ -650,22 +1098,112 @@
           await adminModifyPlayerResource(uid, rk, mode, Number(amtStr));
         };
       });
+
+      box.querySelectorAll('[data-save-direct]').forEach(btn => {
+        btn.onclick = async (e) => {
+          e.stopPropagation();
+          const uid = btn.getAttribute('data-save-direct');
+          const cardEl = btn.closest('[data-uid]');
+          if (!cardEl) return;
+          const getVal = (f) => {
+            const el = cardEl.querySelector(`[data-edit-field="${f}"]`);
+            return el ? el.value : '';
+          };
+          const nextCoins = Math.max(0, Math.round(Number(getVal('coins')) || 0));
+          const nextGems = Math.max(0, Math.round(Number(getVal('gems')) || 0));
+          const nextEnergy = Math.max(0, Math.round(Number(getVal('energy')) || 0));
+          const nextSticks = Math.max(0, Math.round(Number(getVal('sticks')) || 0));
+          const nextSkin = String(getVal('equippedSkin') || 'classic');
+          await adminSaveFullPlayerProfile(uid, {
+            coins: nextCoins,
+            gems: nextGems,
+            energy: nextEnergy,
+            sticks: nextSticks,
+            equippedSkin: nextSkin
+          });
+        };
+      });
     }
 
     _viewUnsubs.push(onValue('players', drawPlayers, 2000));
   }
 
+  async function adminSaveFullPlayerProfile(uid, fields) {
+    const now = Date.now();
+    const raw = await fbGet(`players/${encodeURIComponent(uid)}`);
+    const cur = extractPlayerNormalized(uid, raw);
+    const coins = fields.coins !== undefined ? Math.max(0, Math.round(Number(fields.coins) || 0)) : cur.coins;
+    const gems = fields.gems !== undefined ? Math.max(0, Math.round(Number(fields.gems) || 0)) : cur.gems;
+    const energy = fields.energy !== undefined ? Math.max(0, Math.round(Number(fields.energy) || 0)) : cur.energy;
+    const sticks = fields.sticks !== undefined ? Math.max(0, Math.round(Number(fields.sticks) || 0)) : cur.sticks;
+    const equippedSkin = fields.equippedSkin || cur.equippedSkin || 'classic';
+    const wallet = Object.assign({}, (raw && raw.wallet) || {}, {
+      coins, gems, energy, sticks, equippedSkin, lastSeen: cur.lastSeen || now
+    });
+    const patch = {
+      coins,
+      taps: coins,
+      count: coins,
+      gems,
+      energy,
+      sticks,
+      skin: equippedSkin,
+      equippedSkin,
+      wallet,
+      adminUpdatedAt: now
+    };
+    await fbPatch(`players/${encodeURIComponent(uid)}`, patch);
+    for (const rk of ['coins', 'gems', 'energy', 'sticks']) {
+      if (fields[rk] !== undefined && fields[rk] !== cur[rk]) {
+        await fbPut(`admin_grants/${encodeURIComponent(uid)}/${now}_${rk}`, {
+          resource: rk, mode: 'set', delta: fields[rk] - cur[rk], newValue: fields[rk], ts: now, claimed: false
+        });
+      }
+    }
+    if (fields.equippedSkin && fields.equippedSkin !== cur.equippedSkin) {
+      await fbPatch(`players/${encodeURIComponent(uid)}/unlocked_skins`, { [equippedSkin]: true });
+      await fbPut(`admin_grants/${encodeURIComponent(uid)}/${now}_skin`, {
+        resource: 'skin', skinId: equippedSkin, mode: 'unlock', delta: 1, newValue: 1, ts: now, claimed: false
+      });
+    }
+    if (String(uid) === getMe().id) {
+      updateLocalWallet({ coins, gems, energy, sticks, equippedSkin });
+    }
+    pushTelemetryAction(`adm_save_profile:${uid}`);
+    toast(`💾 Профиль игрока ${uid} сохранён!`);
+  }
+
   async function adminModifyPlayerResource(uid, resKey, mode, deltaOrVal) {
     const now = Date.now();
-    const p = (await fbGet(`players/${encodeURIComponent(uid)}`)) || { id: uid, coins: 0, gems: 5, energy: 500, sticks: 0 };
-    const cur = Math.max(0, Number(p[resKey]) || 0);
-    const nextVal = mode === 'reset' ? 0 : Math.max(0, cur + deltaOrVal);
+    const raw = (await fbGet(`players/${encodeURIComponent(uid)}`)) || { id: uid, coins: 0, gems: 5, energy: 500, sticks: 0 };
+    const norm = extractPlayerNormalized(uid, raw);
+    const cur = Math.max(0, Number(norm[resKey]) || 0);
+    const nextVal = mode === 'reset' ? 0 : (mode === 'set' ? Math.max(0, Math.round(Number(deltaOrVal) || 0)) : Math.max(0, Math.round(cur + deltaOrVal)));
     const delta = nextVal - cur;
-    const patch = { [resKey]: nextVal, ts: now, adminUpdatedAt: now };
+    const prevWallet = (raw && typeof raw.wallet === 'object') ? raw.wallet : {};
+    const nextWallet = Object.assign({}, prevWallet, {
+      coins: resKey === 'coins' ? nextVal : norm.coins,
+      gems: resKey === 'gems' ? nextVal : norm.gems,
+      energy: resKey === 'energy' ? nextVal : norm.energy,
+      sticks: resKey === 'sticks' ? nextVal : norm.sticks,
+      equippedSkin: norm.equippedSkin
+    });
+    const patch = {
+      [resKey]: nextVal,
+      coins: nextWallet.coins,
+      gems: nextWallet.gems,
+      energy: nextWallet.energy,
+      sticks: nextWallet.sticks,
+      skin: norm.equippedSkin,
+      equippedSkin: norm.equippedSkin,
+      wallet: nextWallet,
+      ts: now,
+      adminUpdatedAt: now
+    };
     if (resKey === 'coins') {
       patch.taps = nextVal;
       patch.count = nextVal;
-      if (mode === 'reset') patch.adminResetId = (Number(p.adminResetId) || 0) + 1;
+      if (mode === 'reset') patch.adminResetId = (Number(raw.adminResetId) || 0) + 1;
     }
     await fbPatch(`players/${encodeURIComponent(uid)}`, patch);
     await fbPut(`admin_grants/${encodeURIComponent(uid)}/${now}`, {
@@ -1028,10 +1566,182 @@
     return true;
   }
 
-  // ==================== 3. ДУЭЛИ 1v1 НА КОИНЫ (ПОКЕР И ШАХМАТЫ) ====================
+  // ==================== 3. ДУЭЛИ 1v1 НА КОИНЫ (ПОКЕР И ШАХМАТЫ), ИНВАЙТЫ И МИНИ-ЧАТ ====================
   let _duelTargetId = '';
   let _duelGame = 'chess';
   let _duelBet = 10000;
+  let _chessTimeMode = '5m'; // '5m' | '10m' | 'none'
+
+  const QUICK_CHAT_PHRASES = [
+    '👋 Привет!',
+    '😎 Хороший ход',
+    '⏳ Ходи давай!',
+    '🔥 Ва-банк!',
+    '😂 Ха-ха',
+    '🤝 GG!'
+  ];
+
+  function showFloatingChatBubble(senderName, text) {
+    const old = document.getElementById('bgChatFloatingBubble');
+    if (old) old.remove();
+    const b = document.createElement('div');
+    b.id = 'bgChatFloatingBubble';
+    b.className = 'bg-chat-bubble-toast';
+    b.innerHTML = `💬 <b>${esc(senderName)}:</b> ${esc(text)}`;
+    document.body.appendChild(b);
+    b.animate([
+      { opacity: 0, transform: 'translate(-50%, -10px) scale(0.9)' },
+      { opacity: 1, transform: 'translate(-50%, 0) scale(1)', offset: 0.15 },
+      { opacity: 1, transform: 'translate(-50%, 0) scale(1)', offset: 0.82 },
+      { opacity: 0, transform: 'translate(-50%, -12px) scale(0.95)' }
+    ], { duration: 3100, easing: 'ease-out' }).onfinish = () => b.remove();
+  }
+
+  function createMiniChatController(hostEl, toggleBtnSelector, drawerSelector, fbObjectPath) {
+    const me = getMe();
+    let chatOpen = false;
+    let unreadCount = 0;
+    let lastMsgTs = 0;
+    let initialized = false;
+    let currentMessages = [];
+
+    const renderDrawer = () => {
+      const toggleBtn = hostEl.querySelector(toggleBtnSelector);
+      const drawer = hostEl.querySelector(drawerSelector);
+      if (toggleBtn) {
+        toggleBtn.innerHTML = `💬 Чат${unreadCount > 0 && !chatOpen ? `<span class="bg-chat-badge">${unreadCount}</span>` : ''}`;
+      }
+      if (!drawer) return;
+      drawer.hidden = !chatOpen;
+      if (!chatOpen) return;
+
+      if (!drawer.getAttribute('data-chat-built')) {
+        drawer.setAttribute('data-chat-built', '1');
+        drawer.innerHTML = `
+          <div class="bg-chat-drawer">
+            <div class="bg-chat-feed" data-chat-feed="1"></div>
+            <div class="bg-chat-quick">
+              ${QUICK_CHAT_PHRASES.map(ph => `<button type="button" class="bg-chat-qbtn" data-qphrase="${esc(ph)}">${esc(ph)}</button>`).join('')}
+            </div>
+            <div class="bg-row" style="gap:6px">
+              <input type="text" class="bg-input" data-chat-inp="1" maxlength="80" placeholder="Сообщение сопернику (до 80 симв.)..." style="flex:1">
+              <button type="button" class="bg-btn sm green" data-chat-send="1">➤</button>
+            </div>
+          </div>
+        `;
+        drawer.querySelectorAll('[data-qphrase]').forEach(qb => {
+          qb.onclick = () => sendChatMessage(qb.getAttribute('data-qphrase'));
+        });
+        const inp = drawer.querySelector('[data-chat-inp]');
+        const sBtn = drawer.querySelector('[data-chat-send]');
+        const submitInp = () => {
+          if (!inp) return;
+          const val = inp.value.trim().slice(0, 80);
+          if (!val) return;
+          inp.value = '';
+          sendChatMessage(val);
+        };
+        if (sBtn) sBtn.onclick = submitInp;
+        if (inp) {
+          inp.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); submitInp(); }
+          });
+        }
+      }
+
+      const feed = drawer.querySelector('[data-chat-feed]');
+      if (feed) {
+        if (!currentMessages.length) {
+          feed.innerHTML = `<div class="bg-muted" style="font-size:11px">Сообщений пока нет — нажмите быструю фразу ниже!</div>`;
+        } else {
+          feed.innerHTML = currentMessages.map(m => {
+            const tStr = m.ts ? new Date(Number(m.ts)).toTimeString().slice(0, 5) : '';
+            return `<div class="bg-chat-msg"><small class="bg-muted">[${esc(tStr)}]</small> <b>${esc(m.name || 'Игрок')}:</b> ${esc(m.text || '')}</div>`;
+          }).join('');
+          feed.scrollTop = feed.scrollHeight;
+        }
+      }
+    };
+
+    const sendChatMessage = async (rawText) => {
+      const text = String(rawText || '').trim().slice(0, 80);
+      if (!text) return;
+      const now = Date.now();
+      const entry = {
+        id: `msg_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        uid: me.id,
+        name: me.name,
+        text,
+        ts: now
+      };
+      pushTelemetryAction(`chat_send:${text.slice(0, 24)}`);
+      const nextChat = [...currentMessages, entry].slice(-15);
+      currentMessages = nextChat;
+      lastMsgTs = now;
+      renderDrawer();
+      await fbPatch(fbObjectPath, { chat: nextChat });
+    };
+
+    const bindToggle = () => {
+      const toggleBtn = hostEl.querySelector(toggleBtnSelector);
+      if (toggleBtn && !toggleBtn._chatBound) {
+        toggleBtn._chatBound = true;
+        toggleBtn.onclick = () => {
+          chatOpen = !chatOpen;
+          if (chatOpen) unreadCount = 0;
+          renderDrawer();
+        };
+      }
+    };
+
+    const onSyncChat = (rawChat) => {
+      bindToggle();
+      const arr = toArr(rawChat).filter(m => m && m.text).slice(-15);
+      const newest = arr.length ? arr[arr.length - 1] : null;
+      const newestTs = newest ? Number(newest.ts) || 0 : 0;
+      if (!initialized) {
+        initialized = true;
+        lastMsgTs = newestTs;
+      } else if (newest && newestTs > lastMsgTs) {
+        lastMsgTs = newestTs;
+        if (String(newest.uid) !== String(me.id)) {
+          if (!chatOpen) unreadCount += 1;
+          showFloatingChatBubble(newest.name || 'Соперник', newest.text);
+        }
+      }
+      currentMessages = arr;
+      renderDrawer();
+    };
+
+    return { onSyncChat, bindToggle, renderDrawer };
+  }
+
+  function shareDuelInviteToTelegram(duelId, game = 'poker', bet = 10000) {
+    const cleanId = String(duelId || '').trim();
+    if (!cleanId) return;
+    const gameLabel = game === 'chess' ? '♟ Берёзовые Шахматы' : '🃏 Берёзовый Покер 1v1';
+    const inviteUrl = `https://t.me/oreo_67_bot/play?startapp=${encodeURIComponent(cleanId)}`;
+    const shareText = `⚔️ Вызываю тебя на дуэль 1v1 в ${gameLabel} в ОРЕО67! Ставка: ${fmt(bet)} 🪙 (Банк: ${fmt((Number(bet) || 0) * 2)} 🪙). Жми и принимай вызов!`;
+    const tgShareLink = `https://t.me/share/url?url=${encodeURIComponent(inviteUrl)}&text=${encodeURIComponent(shareText)}`;
+    pushTelemetryAction(`duel_invite_tg:${cleanId}`);
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(`${shareText} ${inviteUrl}`).catch(() => {});
+      }
+    } catch (e) {}
+
+    const tgWebApp = window.Telegram && window.Telegram.WebApp;
+    if (tgWebApp && typeof tgWebApp.openTelegramLink === 'function') {
+      try {
+        tgWebApp.openTelegramLink(tgShareLink);
+        toast('📲 Ссылка на дуэль скопирована и открыта отправка в Telegram!');
+        return;
+      } catch (e) {}
+    }
+    window.open(tgShareLink, '_blank');
+    toast('📲 Ссылка-приглашение скопирована! Отправьте её другу в Telegram.');
+  }
 
   function renderDuelsTab(body) {
     document.getElementById('bgTitle').textContent = '⚔️ Вызвать игрока 1v1 (Покер / Шахматы)';
@@ -1043,6 +1753,13 @@
           <button class="bg-btn ${ _duelGame === 'poker' ? '' : 'ghost' }" id="duelPickPoker">🃏 Берёзовый Покер 1v1</button>
           <button class="bg-btn ${ _duelGame === 'chess' ? '' : 'ghost' }" id="duelPickChess">♟ Берёзовые Шахматы</button>
         </div>
+        ${_duelGame === 'chess' ? `
+          <div class="bg-row" style="margin-bottom:8px">
+            <button class="bg-btn sm ${_chessTimeMode === '5m' ? 'green' : 'ghost'}" data-chess-time="5m">⏱ 5 мин</button>
+            <button class="bg-btn sm ${_chessTimeMode === '10m' ? 'green' : 'ghost'}" data-chess-time="10m">⏱ 10 мин</button>
+            <button class="bg-btn sm ${_chessTimeMode === 'none' ? 'green' : 'ghost'}" data-chess-time="none">♾️ Без таймера</button>
+          </div>
+        ` : ''}
         <div class="bg-row" style="margin-bottom:8px">
           ${[10000, 50000, 100000, 500000].map(b => `
             <button class="bg-btn sm ${ _duelBet === b ? '' : 'ghost' }" data-bet="${b}">${fmt(b)} 🪙</button>
@@ -1071,6 +1788,9 @@
 
     body.querySelector('#duelPickPoker').onclick = () => { _duelGame = 'poker'; renderDuelsTab(body); };
     body.querySelector('#duelPickChess').onclick = () => { _duelGame = 'chess'; renderDuelsTab(body); };
+    body.querySelectorAll('[data-chess-time]').forEach(tb => {
+      tb.onclick = () => { _chessTimeMode = tb.getAttribute('data-chess-time') || '5m'; renderDuelsTab(body); };
+    });
     body.querySelectorAll('[data-bet]').forEach(b => {
       b.onclick = () => { _duelBet = Number(b.getAttribute('data-bet')); renderDuelsTab(body); };
     });
@@ -1105,8 +1825,9 @@
             <div class="bg-row">
               ${canAccept ? `<button class="bg-btn sm green" data-acc="${esc(ch.id)}">✅ Принять</button>` : ''}
               ${canAccept && String(ch.opponentId) === me.id ? `<button class="bg-btn sm red" data-dec="${esc(ch.id)}">❌</button>` : ''}
+              ${isMine && ch.status === 'pending' ? `<button class="bg-btn sm wood" data-inv="${esc(ch.id)}:${esc(ch.game)}:${Number(ch.bet) || 10000}">📲 Инвайт</button>` : ''}
               ${isMine && ch.status === 'pending' ? `<button class="bg-btn sm red" data-can="${esc(ch.id)}">Отмена</button>` : ''}
-              ${isParticipant && ch.status === 'active' ? `<button class="bg-btn sm" data-open="${esc(ch.id)}:${esc(ch.game)}">Войти</button>` : ''}
+              ${isParticipant && (ch.status === 'active' || ch.status === 'pending') ? `<button class="bg-btn sm" data-open="${esc(ch.id)}:${esc(ch.game)}">Войти</button>` : ''}
             </div>
           </div>
         `;
@@ -1115,6 +1836,12 @@
       box.querySelectorAll('[data-acc]').forEach(b => { b.onclick = () => acceptEscrowDuelChallenge(b.getAttribute('data-acc')); });
       box.querySelectorAll('[data-dec]').forEach(b => { b.onclick = () => cancelOrDeclineEscrowDuel(b.getAttribute('data-dec'), false); });
       box.querySelectorAll('[data-can]').forEach(b => { b.onclick = () => cancelOrDeclineEscrowDuel(b.getAttribute('data-can'), true); });
+      box.querySelectorAll('[data-inv]').forEach(b => {
+        b.onclick = () => {
+          const [cid, gm, bt] = b.getAttribute('data-inv').split(':');
+          shareDuelInviteToTelegram(cid, gm, Number(bt) || 10000);
+        };
+      });
       box.querySelectorAll('[data-open]').forEach(b => {
         b.onclick = () => {
           const [cid, g] = b.getAttribute('data-open').split(':');
@@ -1164,7 +1891,7 @@
 
     const newCoins = getCoins() - bet;
     updateLocalWallet({ coins: newCoins });
-    await fbPatch(`players/${encodeURIComponent(me.id)}`, { coins: newCoins, taps: newCoins, count: newCoins, skin: mySkin, ts: Date.now() });
+    await syncMyWalletToFirebase({ coins: newCoins, skin: mySkin, equippedSkin: mySkin });
 
     let oppName = '';
     let oppUname = '';
@@ -1190,6 +1917,7 @@
       opponentSkin: oppSkin,
       game,
       gameTitle: game === 'chess' ? '♟ Берёзовые Шахматы' : '🃏 Берёзовый Покер 1v1',
+      timeMode: _chessTimeMode || '5m',
       bet,
       pot: vsBot ? bet * 2 : bet,
       escrowFrozen: true,
@@ -1244,7 +1972,7 @@
     if (String(ch.challengerId) !== me.id) {
       const nextC = getCoins() - bet;
       updateLocalWallet({ coins: nextC });
-      await fbPatch(`players/${encodeURIComponent(me.id)}`, { coins: nextC, taps: nextC, count: nextC, skin: mySkin, ts: Date.now() });
+      await syncMyWalletToFirebase({ coins: nextC, skin: mySkin, equippedSkin: mySkin });
     }
 
     if (ch.game === 'chess') {
@@ -1274,6 +2002,11 @@
     if (bet > 0 && ch.challengerId) {
       await adminModifyPlayerResource(ch.challengerId, 'coins', 'add', bet);
     }
+    if (ch.game === 'poker') {
+      await fbDelete(`poker_tables/${encodeURIComponent(cid)}`);
+    } else if (ch.game === 'chess') {
+      await fbDelete(`duel_matches/${encodeURIComponent(cid)}`);
+    }
     toast(isCancel ? '✅ Вызов отменён, ставка возвращена' : '❌ Вызов отклонён, ставка возвращена игроку');
   }
 
@@ -1290,13 +2023,18 @@
     const ch = tx.snapshot;
     const bet = Math.max(0, Number(ch.bet) || 0);
     const pot = Math.max(bet * 2, Number(ch.pot) || 0);
+    const bonusSticks = Math.max(500, Math.round(pot * 0.05));
     if (isDraw) {
       if (ch.challengerId) await adminModifyPlayerResource(ch.challengerId, 'coins', 'add', bet);
       if (ch.opponentId && ch.opponentId !== 'birch_ai_bot') await adminModifyPlayerResource(ch.opponentId, 'coins', 'add', bet);
       toast(`🤝 Ничья! Ставки по ${fmt(bet)} 🪙 возвращены обоим игрокам.`);
     } else if (winnerId && winnerId !== 'birch_ai_bot') {
       await adminModifyPlayerResource(winnerId, 'coins', 'add', pot);
-      if (String(winnerId) === getMe().id) toast(`🏆 ПОБЕДА! Вы забрали банк дуэли +${fmt(pot)} 🪙!`);
+      await adminModifyPlayerResource(winnerId, 'sticks', 'add', bonusSticks);
+      if (String(winnerId) === getMe().id) {
+        await syncMyWalletToFirebase();
+        toast(`🏆 ПОБЕДА! Вы забрали банк дуэли +${fmt(pot)} 🪙 и +${fmt(bonusSticks)} 🪵!`);
+      }
     }
   }
 
@@ -1355,6 +2093,8 @@
   }
 
   async function initChessMatchInFirebase(cid, chObj, vsBot = false) {
+    const tMode = chObj.timeMode || _chessTimeMode || '5m';
+    const initMs = tMode === '10m' ? 10 * 60 * 1000 : (tMode === 'none' ? 0 : CHESS_INIT_MS);
     const match = {
       id: cid,
       whiteId: chObj.challengerId,
@@ -1368,9 +2108,12 @@
       pot: chObj.bet * 2,
       fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
       history: [],
+      chat: [],
       turn: 'w',
-      wTime: CHESS_INIT_MS,
-      bTime: CHESS_INIT_MS,
+      timeMode: tMode,
+      noTimer: tMode === 'none',
+      wTime: initMs,
+      bTime: initMs,
       lastMoveTs: Date.now(),
       lastFrom: '',
       lastTo: '',
@@ -1381,7 +2124,18 @@
     await fbPut(`duel_matches/${encodeURIComponent(cid)}`, match);
   }
 
-  function fmtClock(ms) {
+  async function leaveChessMatchIfNeeded(matchId) {
+    if (!matchId) return;
+    const me = getMe();
+    const m = await fbGet(`duel_matches/${encodeURIComponent(matchId)}`);
+    if (!m) return;
+    if (m.status === 'waiting' && String(m.whiteId) === String(me.id)) {
+      await cancelOrDeclineEscrowDuel(matchId, true);
+    }
+  }
+
+  function fmtClock(ms, noTimer = false) {
+    if (noTimer) return '♾️ Без таймера';
     const s = Math.max(0, Math.ceil((Number(ms) || 0) / 1000));
     const m = Math.floor(s / 60);
     const sec = s % 60;
@@ -1402,6 +2156,15 @@
           <span id="chessStatusTxt"><i class="bg-turn-dot"></i>Загрузка партии...</span>
           <span class="bg-chip gold" id="chessPotChip">Банк: 0 🪙</span>
         </div>
+        <div class="bg-row sp" style="margin-bottom:6px;gap:5px;flex-wrap:wrap">
+          <div class="bg-row" style="gap:4px">
+            <button type="button" class="bg-btn sm ghost" data-ch-mode="5m">⏱ 5 мин</button>
+            <button type="button" class="bg-btn sm ghost" data-ch-mode="10m">⏱ 10 мин</button>
+            <button type="button" class="bg-btn sm ghost" data-ch-mode="none">♾️ Без таймера</button>
+          </div>
+          <button type="button" class="bg-btn sm wood" id="chessChatToggleBtn">💬 Чат</button>
+        </div>
+        <div id="chessChatDrawerWrap" hidden></div>
         <div class="bg-clock" id="chessTopClock">
           <div class="bg-clock-meta">
             <div class="bg-piece-badge b" id="chessTopBadge">♚</div>
@@ -1434,9 +2197,41 @@
     `;
 
     const boardEl = body.querySelector('#chessBoard');
+    const chatCtrl = createMiniChatController(
+      body,
+      '#chessChatToggleBtn',
+      '#chessChatDrawerWrap',
+      `duel_matches/${encodeURIComponent(matchId)}`
+    );
+
+    body.querySelectorAll('[data-ch-mode]').forEach(btn => {
+      btn.onclick = async () => {
+        const nextMode = btn.getAttribute('data-ch-mode') || '5m';
+        _chessTimeMode = nextMode;
+        const noTimer = nextMode === 'none';
+        const nextMs = nextMode === '10m' ? 10 * 60 * 1000 : (noTimer ? 0 : CHESS_INIT_MS);
+        pushTelemetryAction(`chess_time_mode:${nextMode}`);
+        if (currentMatch && currentMatch.status !== 'finished') {
+          await fbPatch(`duel_matches/${encodeURIComponent(matchId)}`, {
+            timeMode: nextMode,
+            noTimer,
+            wTime: nextMs,
+            bTime: nextMs,
+            lastMoveTs: Date.now()
+          });
+          toast(noTimer ? '♾️ Включён режим «Без таймера»!' : `⏱ Таймер установлен: ${nextMode === '10m' ? '10 минут' : '5 минут'}`);
+        }
+      };
+    });
+
+    function isNoTimerMatch(m) {
+      return Boolean(m && (m.noTimer || m.timeMode === 'none'));
+    }
 
     function getLiveClocks(m) {
-      if (!m || m.status !== 'active') return { w: m ? m.wTime : CHESS_INIT_MS, b: m ? m.bTime : CHESS_INIT_MS };
+      if (!m) return { w: CHESS_INIT_MS, b: CHESS_INIT_MS };
+      if (isNoTimerMatch(m)) return { w: 0, b: 0 };
+      if (m.status !== 'active') return { w: m.wTime, b: m.bTime };
       const elapsed = Math.max(0, Date.now() - (Number(m.lastMoveTs) || Date.now()));
       return {
         w: m.turn === 'w' ? Math.max(0, m.wTime - elapsed) : m.wTime,
@@ -1446,6 +2241,14 @@
 
     function updateClocksDom(m) {
       if (!m) return;
+      const noTimer = isNoTimerMatch(m);
+      const curMode = noTimer ? 'none' : (m.timeMode || '5m');
+      body.querySelectorAll('[data-ch-mode]').forEach(btn => {
+        const bMode = btn.getAttribute('data-ch-mode');
+        btn.classList.toggle('green', bMode === curMode);
+        btn.classList.toggle('ghost', bMode !== curMode);
+      });
+
       const amBlack = String(m.blackId) === me.id && String(m.whiteId) !== me.id;
       const topIsBlack = !amBlack;
       const clocks = getLiveClocks(m);
@@ -1456,15 +2259,15 @@
       const bEl = body.querySelector('#chessBotTime');
       const topClock = body.querySelector('#chessTopClock');
       const botClock = body.querySelector('#chessBotClock');
-      if (tEl) tEl.textContent = fmtClock(topMs);
-      if (bEl) bEl.textContent = fmtClock(botMs);
+      if (tEl) tEl.textContent = fmtClock(topMs, noTimer);
+      if (bEl) bEl.textContent = fmtClock(botMs, noTimer);
       if (topClock) {
         topClock.classList.toggle('active', m.status === 'active' && m.turn === (topIsBlack ? 'b' : 'w'));
-        topClock.classList.toggle('low', m.status === 'active' && topMs <= 30000);
+        topClock.classList.toggle('low', !noTimer && m.status === 'active' && topMs <= 30000);
       }
       if (botClock) {
         botClock.classList.toggle('active', m.status === 'active' && m.turn === (topIsBlack ? 'w' : 'b'));
-        botClock.classList.toggle('low', m.status === 'active' && botMs <= 30000);
+        botClock.classList.toggle('low', !noTimer && m.status === 'active' && botMs <= 30000);
       }
     }
 
@@ -1474,6 +2277,7 @@
       currentMatch = m;
       _liveChessState = m ? Object.assign({ matchId }, m) : null;
       if (!m || !window.Chess) return;
+      chatCtrl.onSyncChat(m.chat);
       if (m.status && m.status !== lastLoggedChessStatus) {
         pushTelemetryAction(`chess_stage:${lastLoggedChessStatus || 'init'}->${m.status}`);
         lastLoggedChessStatus = m.status;
@@ -1583,6 +2387,15 @@
       const out = body.querySelector('#chessOutcomeBox');
       if (m.status === 'finished') {
         out.innerHTML = `<div class="bg-result"><h3>🏆 ${esc(m.reason || 'Партия завершена')}</h3><div>Банк дуэли: <b>${fmt(m.pot || 0)} 🪙</b></div></div>`;
+      } else if (m.status === 'waiting') {
+        out.innerHTML = `
+          <div class="bg-sec" style="margin-top:8px;text-align:center">
+            <div class="bg-muted" style="margin-bottom:8px">⏳ Ожидание подключения соперника к дуэли...</div>
+            <button type="button" class="bg-btn green" id="chessInviteTgBtn" style="width:100%">📲 Пригласить друга в Telegram</button>
+          </div>
+        `;
+        const invBtn = out.querySelector('#chessInviteTgBtn');
+        if (invBtn) invBtn.onclick = () => shareDuelInviteToTelegram(matchId, 'chess', m.bet || 10000);
       } else {
         out.innerHTML = '';
       }
@@ -1724,16 +2537,18 @@
     _turnInterval = setInterval(async () => {
       if (!currentMatch || currentMatch.status !== 'active') return;
       updateClocksDom(currentMatch);
-      const clocks = getLiveClocks(currentMatch);
-      if (clocks.w <= 0 || clocks.b <= 0) {
-        const winId = clocks.w <= 0 ? currentMatch.blackId : currentMatch.whiteId;
-        const winName = clocks.w <= 0 ? currentMatch.blackName : currentMatch.whiteName;
-        currentMatch.status = 'finished';
-        await fbPatch(`duel_matches/${encodeURIComponent(matchId)}`, {
-          status: 'finished', winner: winId, reason: `Флаг упал! Победил ${winName}`
-        });
-        await settleDuelPot(matchId, winId, false);
-        return;
+      if (!isNoTimerMatch(currentMatch)) {
+        const clocks = getLiveClocks(currentMatch);
+        if (clocks.w <= 0 || clocks.b <= 0) {
+          const winId = clocks.w <= 0 ? currentMatch.blackId : currentMatch.whiteId;
+          const winName = clocks.w <= 0 ? currentMatch.blackName : currentMatch.whiteName;
+          currentMatch.status = 'finished';
+          await fbPatch(`duel_matches/${encodeURIComponent(matchId)}`, {
+            status: 'finished', winner: winId, reason: `Флаг упал! Победил ${winName}`
+          });
+          await settleDuelPot(matchId, winId, false);
+          return;
+        }
       }
       if (currentMatch.vsBot && currentMatch.turn === 'b' && !botThinking && Date.now() - (Number(currentMatch.lastMoveTs) || 0) > 1500) {
         makeBotChessMove(matchId);
@@ -1766,6 +2581,7 @@
     tbl.seats = toArr(tbl.seats).filter(Boolean).map(s => ({
       ...s,
       stack: Math.max(0, Math.round(Number(s.stack) || 0)),
+      initialBuyIn: Math.max(0, Math.round(Number(s.initialBuyIn) || Number(s.stack) || 0)),
       bet: Math.max(0, Math.round(Number(s.bet) || 0)),
       totalBet: Math.max(0, Math.round(Number(s.totalBet) || 0)),
       cards: toArr(s.cards).filter(Boolean),
@@ -1773,16 +2589,22 @@
       allIn: Boolean(s.allIn),
       busted: Boolean(s.busted),
       acted: Boolean(s.acted),
-      isBot: Boolean(s.isBot)
+      isBot: Boolean(s.isBot),
+      missedTurns: Math.max(0, Math.floor(Number(s.missedTurns) || 0)),
+      lastActiveTs: Number(s.lastActiveTs) || Date.now()
     }));
     tbl.board = toArr(tbl.board).filter(Boolean);
     tbl.deck = toArr(tbl.deck).filter(Boolean);
     tbl.logs = toArr(tbl.logs).filter(Boolean);
+    tbl.chat = toArr(tbl.chat).filter(Boolean).slice(-15);
     tbl.pot = Math.max(0, Math.round(Number(tbl.pot) || 0));
     tbl.currentBet = Math.max(0, Math.round(Number(tbl.currentBet) || 0));
     tbl.dealerIdx = Math.max(0, Math.floor(Number(tbl.dealerIdx) || 0));
     tbl.turnIdx = Math.max(0, Math.floor(Number(tbl.turnIdx) || 0));
     tbl.turnDeadline = Number(tbl.turnDeadline) || 0;
+    tbl.handId = Math.max(0, Math.floor(Number(tbl.handId) || 0));
+    tbl.lastDealTs = Number(tbl.lastDealTs) || 0;
+    tbl.creatorId = tbl.creatorId ? String(tbl.creatorId) : '';
     tbl.updatedAt = Number(tbl.updatedAt) || Date.now();
     return tbl;
   }
@@ -1799,7 +2621,7 @@
     return tbl.deck.pop() || 'As';
   }
 
-  function resolveShowdownInPlace(tbl, tid, knockoutsOut) {
+  function resolveShowdownInPlace(tbl, tid, knockoutsOut, payoutsOut) {
     while (tbl.board.length < 5) tbl.board.push(drawCardSafe(tbl));
     const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
     let duelWinnerId = '';
@@ -1814,8 +2636,12 @@
 
     if (contenders.length === 1) {
       const w = contenders[0];
-      w.stack += tbl.pot;
-      tbl.winnerBanner = `🏆 ${w.name} забирает ${fmt(tbl.pot)} 🪵!`;
+      const wonAmt = tbl.pot;
+      w.stack += wonAmt;
+      if (payoutsOut && wonAmt > 0 && !w.isBot) {
+        payoutsOut.push({ userId: w.id, wonPot: wonAmt, newStack: w.stack });
+      }
+      tbl.winnerBanner = `🏆 ${w.name} забирает ${fmt(wonAmt)} 🪵!`;
       tbl.logs = tbl.logs.slice(-11).concat([tbl.winnerBanner]);
       tbl.pot = 0;
       tbl.stage = 'showdown';
@@ -1849,7 +2675,13 @@
       const winners = elig.filter(e => evalMap[e.id].score === topScore);
       const share = Math.floor(p.amount / winners.length);
       const odd = p.amount - share * winners.length;
-      winners.forEach((w, idx) => { w.stack += share + (idx === 0 ? odd : 0); });
+      winners.forEach((w, idx) => {
+        const gain = share + (idx === 0 ? odd : 0);
+        w.stack += gain;
+        if (payoutsOut && gain > 0 && !w.isBot) {
+          payoutsOut.push({ userId: w.id, wonPot: gain, newStack: w.stack });
+        }
+      });
       mainWinner = winners[0];
     }
 
@@ -1877,10 +2709,10 @@
     return duelWinnerId;
   }
 
-  function advancePokerStreetsInPlace(tbl, tid, knockoutsOut) {
+  function advancePokerStreetsInPlace(tbl, tid, knockoutsOut, payoutsOut) {
     const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
     if (contenders.length <= 1) {
-      return resolveShowdownInPlace(tbl, tid, knockoutsOut);
+      return resolveShowdownInPlace(tbl, tid, knockoutsOut, payoutsOut);
     }
 
     const canActCount = contenders.filter(s => !s.allIn && s.stack > 0).length;
@@ -1909,6 +2741,7 @@
     }
 
     if (tbl.stage !== 'showdown') {
+      // На постфлопе (flop, turn, river) первым ходит первый активный игрок после дилера
       const n = tbl.seats.length;
       let postTurn = -1;
       for (let step = 1; step <= n; step++) {
@@ -1929,11 +2762,63 @@
       }
     }
 
-    return resolveShowdownInPlace(tbl, tid, knockoutsOut);
+    return resolveShowdownInPlace(tbl, tid, knockoutsOut, payoutsOut);
   }
 
-  async function processPokerPostEffects(tid, knockouts, duelWinnerId) {
-    for (const ko of knockouts) {
+  async function refundOrCashoutSeatStack(userId, stackAmt, isDuelTable, isTournamentTable) {
+    const amt = Math.max(0, Math.round(Number(stackAmt) || 0));
+    if (!userId || userId === 'birch_ai_bot' || amt <= 0) return;
+    if (isDuelTable) return; // Дуэли рассчитываются через settleDuelPot
+    const me = getMe();
+    if (isTournamentTable) {
+      // В турнире сохраняем палочки (sticks) в профиль игрока
+      if (String(userId) === String(me.id)) {
+        updateLocalWallet({ sticks: amt });
+        await syncMyWalletToFirebase({ sticks: amt });
+      } else {
+        await adminModifyPlayerResource(userId, 'sticks', 'set', amt);
+      }
+    } else {
+      // За кэш-столом 24/7 возвращаем стек в коины + синхронизируем палочки
+      if (String(userId) === String(me.id)) {
+        const nextCoins = getCoins() + amt;
+        const nextSticks = Math.max(getSticks(), amt);
+        updateLocalWallet({ coins: nextCoins, sticks: nextSticks });
+        await syncMyWalletToFirebase({ coins: nextCoins, sticks: nextSticks });
+      } else {
+        await adminModifyPlayerResource(userId, 'coins', 'add', amt);
+      }
+    }
+  }
+
+  async function processPokerPostEffects(tid, knockouts, duelWinnerId, payouts = [], kickedSeats = [], shouldDeleteTable = false) {
+    const isDuel = String(tid).startsWith('duel_');
+    const isTour = String(tid).startsWith('tour_');
+    const me = getMe();
+
+    // Сохраняем выигранные палочки в профиль/кошелёк сразу после раздачи (Блок 3 п. 5)
+    for (const po of (payouts || [])) {
+      if (!po || !po.userId || po.userId === 'birch_ai_bot') continue;
+      if (String(po.userId) === String(me.id)) {
+        const bonusSticks = Math.max(0, Math.round((Number(po.wonPot) || 0) * 0.1));
+        const nextSticks = Math.max(getSticks(), Number(po.newStack) || 0) + bonusSticks;
+        updateLocalWallet({ sticks: nextSticks });
+        syncMyWalletToFirebase({ sticks: nextSticks }).catch(() => {});
+      }
+    }
+
+    // Возврат стека исключённым по AFK игрокам
+    for (const ks of (kickedSeats || [])) {
+      if (!ks || ks.isBot) continue;
+      await refundOrCashoutSeatStack(ks.id, ks.stack, isDuel, isTour);
+      if (String(ks.id) === String(me.id)) {
+        toast('⏱ Вы пропустили 2 хода подряд и были исключены из-за стола (стек возвращён).');
+      } else {
+        toast(`🥾 Игрок ${ks.name || ks.id} исключён за AFK (2 пропуска хода).`);
+      }
+    }
+
+    for (const ko of (knockouts || [])) {
       playKnockoutAnimation(ko.victimName, ko.killerName);
       if (ko.killerId && ko.killerId !== 'birch_ai_bot') {
         await adminModifyPlayerResource(ko.killerId, 'coins', 'add', 20000);
@@ -1946,8 +2831,81 @@
         }
       }
     }
+
     if (duelWinnerId) {
       await settleDuelPot(tid, duelWinnerId, false);
+      // После завершения 1v1 дуэли удаляем стол через 4 секунды, чтобы он не висел мёртвым грузом
+      setTimeout(() => { fbDelete(`poker_tables/${encodeURIComponent(tid)}`).catch(() => {}); }, 4000);
+    } else if (shouldDeleteTable) {
+      await fbDelete(`poker_tables/${encodeURIComponent(tid)}`).catch(() => {});
+    }
+  }
+
+  // Выход игрока из-за покерного стола с сохранением палочек/коинов и авто-очисткой пустого стола (Блок 2 п. 4 и Блок 3 п. 5)
+  async function leavePokerTable(tid, isTournament = false) {
+    if (!tid) return;
+    const me = getMe();
+    const isDuel = String(tid).startsWith('duel_');
+    let myCashedStack = 0;
+    let shouldDeleteTable = false;
+    let duelForfeitWinnerId = '';
+    let cancelWaitingDuel = false;
+
+    await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
+      if (!tbl) return tbl;
+      normalizePokerTable(tbl);
+      const idx = tbl.seats.findIndex(s => String(s.id) === String(me.id));
+      if (idx === -1) {
+        const humans = tbl.seats.filter(s => !s.isBot);
+        if (humans.length === 0) shouldDeleteTable = true;
+        return tbl;
+      }
+
+      const mySeat = tbl.seats[idx];
+      myCashedStack = Math.max(0, Number(mySeat.stack) || 0);
+      tbl.seats.splice(idx, 1);
+      tbl.logs = tbl.logs.slice(-11).concat([`🚪 ${mySeat.name || 'Игрок'} покинул стол.`]);
+
+      const remainingHumans = tbl.seats.filter(s => !s.isBot);
+      const remainingAlive = tbl.seats.filter(s => !s.busted && s.stack > 0);
+
+      if (isDuel) {
+        if (remainingAlive.length >= 1 && tbl.stage !== 'waiting' && tbl.stage !== 'finished') {
+          duelForfeitWinnerId = remainingAlive[0].id;
+          tbl.stage = 'finished';
+          tbl.winnerBanner = `🏆 Победа ${remainingAlive[0].name} (соперник вышел)`;
+        } else if (remainingHumans.length === 0) {
+          cancelWaitingDuel = true;
+          shouldDeleteTable = true;
+        }
+      } else if (remainingHumans.length === 0) {
+        shouldDeleteTable = true;
+      } else if (remainingAlive.length < 2 && ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) {
+        // Если остался 1 человек в раздаче — отдаём ему банк
+        if (remainingAlive.length === 1) {
+          remainingAlive[0].stack += tbl.pot;
+          tbl.pot = 0;
+        }
+        tbl.stage = 'waiting';
+      }
+
+      if (tbl.turnIdx >= tbl.seats.length) tbl.turnIdx = 0;
+      tbl.updatedAt = Date.now();
+      return tbl;
+    });
+
+    if (cancelWaitingDuel) {
+      await cancelOpenDuelChallenge(tid);
+    } else if (duelForfeitWinnerId) {
+      await settleDuelPot(tid, duelForfeitWinnerId, false);
+      await fbDelete(`poker_tables/${encodeURIComponent(tid)}`).catch(() => {});
+    } else if (!isDuel && myCashedStack > 0) {
+      await refundOrCashoutSeatStack(me.id, myCashedStack, false, isTournament);
+      toast(`🪵 Стек ${fmt(myCashedStack)} сохранён в ваш кошелёк!`);
+    }
+
+    if (shouldDeleteTable) {
+      await fbDelete(`poker_tables/${encodeURIComponent(tid)}`).catch(() => {});
     }
   }
 
@@ -2066,8 +3024,8 @@
       if (getCoins() < buyIn) return toast(`❌ Нужно ${fmt(buyIn)} 🪙 для входа за стол!`);
       const tid = `cash_${Date.now()}`;
       const nextC = getCoins() - buyIn;
-      updateLocalWallet({ coins: nextC });
-      await fbPatch(`players/${encodeURIComponent(getMe().id)}`, { coins: nextC, taps: nextC, count: nextC, ts: Date.now() });
+      updateLocalWallet({ coins: nextC, sticks: Math.max(getSticks(), buyIn) });
+      await syncMyWalletToFirebase({ coins: nextC });
       await createOrResetPokerTable(tid, `Берёзовый стол (${fmt(buyIn)} 🪙)`, false, 0);
       await seatPlayerAtPokerTable(tid, `Берёзовый стол`, false, buyIn, 1);
       await seatBotAtPokerTable(tid, buyIn);
@@ -2082,21 +3040,43 @@
     _viewUnsubs.push(onValue('poker_tables', data => {
       const box = body.querySelector('#friendlyTablesBox');
       if (!box) return;
-      const list = Object.values(data || {}).filter(t => t && t.id);
-      if (!list.length) {
-        box.innerHTML = `<div class="bg-muted">Столов пока нет — создайте стол выше!</div>`;
+      const now = Date.now();
+      const me = getMe();
+      const isAdm = isAdminUser();
+      const rawList = Object.values(data || {}).filter(t => t && t.id);
+      const validList = [];
+
+      for (const t of rawList) {
+        const seats = toArr(t.seats).filter(Boolean);
+        const humanSeats = seats.filter(s => !s.isBot);
+        const idleMs = now - (Number(t.updatedAt) || 0);
+        // Авто-очистка пустых столов (0 живых игроков) или неактивных > 3 минут (180 000 мс)
+        if (humanSeats.length === 0 || idleMs >= 180000 || t.stage === 'finished') {
+          fbDelete(`poker_tables/${encodeURIComponent(t.id)}`).catch(() => {});
+          continue;
+        }
+        validList.push(t);
+      }
+
+      if (!validList.length) {
+        box.innerHTML = `<div class="bg-muted">Активных столов пока нет — создайте стол выше!</div>`;
         return;
       }
-      box.innerHTML = list.map(t => {
-        const seats = toArr(t.seats);
+
+      box.innerHTML = validList.map(t => {
+        const seats = toArr(t.seats).filter(Boolean);
         const stg = STAGE_LABELS[t.stage] || t.stage || 'ОЖИДАНИЕ';
+        const canDelete = isAdm || (t.creatorId && String(t.creatorId) === String(me.id)) || seats.some(s => String(s.id) === String(me.id));
         return `
           <div class="bg-item">
             <div class="grow">
               <b>🃏 ${esc(t.title || t.id)}</b>
               <small>Игроков: ${seats.length}/6 • Банк: ${fmt(t.pot || 0)} 🪵 • ${esc(stg)}</small>
             </div>
-            <button class="bg-btn sm" data-join="${esc(t.id)}:${t.isTournament ? '1' : '0'}">Открыть</button>
+            <div class="bg-row" style="gap:6px">
+              <button class="bg-btn sm" data-join="${esc(t.id)}:${t.isTournament ? '1' : '0'}">Открыть</button>
+              ${canDelete ? `<button class="bg-btn sm red" data-del-table="${esc(t.id)}" title="Удалить стол">🗑</button>` : ''}
+            </div>
           </div>
         `;
       }).join('');
@@ -2108,16 +3088,36 @@
           renderActiveView();
         };
       });
+
+      box.querySelectorAll('[data-del-table]').forEach(b => {
+        b.onclick = async () => {
+          const tid = b.getAttribute('data-del-table');
+          if (!tid) return;
+          const tblObj = (data && data[tid]) || null;
+          if (tblObj) {
+            const seats = toArr(tblObj.seats).filter(s => s && !s.isBot && Number(s.stack) > 0);
+            for (const s of seats) {
+              await refundOrCashoutSeatStack(s.id, s.stack, String(tid).startsWith('duel_'), Boolean(tblObj.isTournament));
+            }
+          }
+          await fbDelete(`poker_tables/${encodeURIComponent(tid)}`);
+          toast('🗑 Стол удалён, стеки возвращены игрокам.');
+        };
+      });
     }, 2200));
   }
 
   async function createOrResetPokerTable(tid, title, isTournament, prizePool = 0) {
+    const me = getMe();
     const tbl = {
       id: tid,
       title: title || 'Берёзовый Холдем',
+      creatorId: String(me.id || ''),
       isTournament: Boolean(isTournament),
       prizePool: Number(prizePool) || 0,
       blindLevel: 1,
+      handId: 0,
+      lastDealTs: 0,
       stage: 'waiting',
       pot: 0,
       currentBet: 0,
@@ -2128,6 +3128,7 @@
       board: [],
       deck: [],
       seats: [],
+      chat: [],
       logs: [`🪵 Стол «${title || 'Берёзовый Холдем'}» открыт!`]
     };
     await fbPut(`poker_tables/${encodeURIComponent(tid)}`, tbl);
@@ -2137,12 +3138,13 @@
   async function seatPlayerAtPokerTable(tid, title, isTournament, addSticks, blindLevel = 1) {
     const me = getMe();
     const mySkin = getLocalState().equippedSkin || 'classic';
+    const now = Date.now();
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
       if (!tbl) {
         tbl = {
-          id: tid, title: title || 'Берёзовый Холдем', isTournament: Boolean(isTournament),
-          blindLevel, stage: 'waiting', pot: 0, currentBet: 0, dealerIdx: 0, turnIdx: 0,
-          turnDeadline: 0, updatedAt: Date.now(), board: [], deck: [], seats: [], logs: []
+          id: tid, title: title || 'Берёзовый Холдем', creatorId: String(me.id || ''), isTournament: Boolean(isTournament),
+          blindLevel, handId: 0, lastDealTs: 0, stage: 'waiting', pot: 0, currentBet: 0, dealerIdx: 0, turnIdx: 0,
+          turnDeadline: 0, updatedAt: now, board: [], deck: [], seats: [], chat: [], logs: []
         };
       }
       normalizePokerTable(tbl);
@@ -2151,6 +3153,8 @@
         ex.stack = (Number(ex.stack) || 0) + addSticks;
         ex.skin = mySkin;
         ex.busted = false;
+        ex.missedTurns = 0;
+        ex.lastActiveTs = now;
         ex.status = 'Готов 🪓';
       } else if (tbl.seats.length < 6) {
         tbl.seats.push({
@@ -2159,6 +3163,7 @@
           photo: me.photo,
           skin: mySkin,
           stack: addSticks,
+          initialBuyIn: addSticks,
           bet: 0,
           totalBet: 0,
           cards: [],
@@ -2167,10 +3172,12 @@
           busted: false,
           acted: false,
           isBot: false,
+          missedTurns: 0,
+          lastActiveTs: now,
           status: 'За столом 🌿'
         });
       }
-      tbl.updatedAt = Date.now();
+      tbl.updatedAt = now;
       return tbl;
     });
   }
@@ -2192,6 +3199,7 @@
           name: '🤖 Леший AI',
           photo: '',
           stack: startStack,
+          initialBuyIn: startStack,
           bet: 0,
           totalBet: 0,
           cards: [],
@@ -2200,6 +3208,8 @@
           busted: false,
           acted: false,
           isBot: true,
+          missedTurns: 0,
+          lastActiveTs: Date.now(),
           status: 'Готов 🪓'
         });
       }
@@ -2208,15 +3218,31 @@
     });
   }
 
-  async function startTableNewHand(tid) {
+  // Клиентский замок против параллельных вызовов startTableNewHand за одну секунду
+  const _dealLockByTable = {};
+
+  async function startTableNewHand(tid, expectedStage = '') {
+    const nowTs = Date.now();
+    if (_dealLockByTable[tid] && nowTs - _dealLockByTable[tid] < 2200) {
+      return;
+    }
+    _dealLockByTable[tid] = nowTs;
+
     pushTelemetryAction(`poker_deal:${tid}`);
     let knockouts = [];
+    let payouts = [];
     let duelWinnerId = '';
 
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
       if (!tbl) return tbl;
       normalizePokerTable(tbl);
       if (!tbl.seats.length || tbl.stage === 'finished') return tbl;
+
+      // СТРОГАЯ АТОМАРНАЯ БЛОКИРОВКА (Блок 2 п. 3/1):
+      // Если раздача уже идёт (preflop/flop/turn/river) или стадия уже изменилась другим клиентом — отменяем транзакцию (return;)
+      if (['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return;
+      if (expectedStage && tbl.stage !== expectedStage) return;
+      if (tbl.lastDealTs && Date.now() - Number(tbl.lastDealTs) < 2200) return;
 
       // На открытых кэш-столах 24/7 бот докупается при 0 стеке, чтобы игра не застревала
       const isCash = !tbl.isTournament && !String(tid).startsWith('duel_');
@@ -2257,9 +3283,12 @@
       tbl.dealerIdx = nextDealer !== undefined ? nextDealer : activeIdx[0];
       const dPos = activeIdx.indexOf(tbl.dealerIdx);
 
+      // ПРАВИЛА БЛАЙНДОВ HEADS-UP (1 на 1) и 3+ игроков:
+      // В 1 на 1 Дилер (dealerIdx) ставит Малый Блайнд (МБ = 100) и ходит ПЕРВЫМ на префлопе (turnIdx = dealerIdx),
+      // а второй игрок ставит Большой Блайнд (ББ = 200) и на префлопе обязательно имеет право на опцию (Чек / Рейз) — acted = false!
       let sbPos, bbPos, firstTurnCand;
       if (activeIdx.length === 2) {
-        sbPos = activeIdx[dPos];
+        sbPos = tbl.dealerIdx;
         bbPos = activeIdx[(dPos + 1) % 2];
         firstTurnCand = sbPos;
       } else {
@@ -2268,6 +3297,8 @@
         firstTurnCand = activeIdx[(dPos + 3) % activeIdx.length];
       }
 
+      tbl.handId = (Number(tbl.handId) || 0) + 1;
+      tbl.lastDealTs = Date.now();
       tbl.board = [];
       tbl.pot = 0;
       tbl.stage = 'preflop';
@@ -2280,6 +3311,7 @@
         seat.bet += pay;
         seat.totalBet += pay;
         tbl.pot += pay;
+        seat.acted = false; // Обязательно false, чтобы у ББ сохранялась опция Чека/Рейза на префлопе
         if (seat.stack === 0) seat.allIn = true;
         seat.status = label;
       };
@@ -2287,57 +3319,90 @@
       postBlind(tbl.seats[bbPos], bl.bb, `ББ ${fmt(bl.bb)}`);
 
       tbl.currentBet = Math.max(tbl.seats[sbPos].bet, tbl.seats[bbPos].bet);
-      tbl.logs = tbl.logs.slice(-11).concat([`🃏 Раздача • Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵`]);
+      tbl.logs = tbl.logs.slice(-11).concat([`🃏 Раздача #${tbl.handId} • Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵`]);
 
       const canAct = tbl.seats.filter(s => !s.folded && !s.busted && !s.allIn && s.stack > 0);
-      const needDecision = canAct.some(s => s.bet < tbl.currentBet) || canAct.length >= 2;
+      const needDecision = canAct.some(s => s.bet < tbl.currentBet || !s.acted) || canAct.length >= 2;
       if (!needDecision || canAct.length === 0) {
-        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts, payouts);
         return tbl;
       }
 
-      const n = tbl.seats.length;
-      let chosenTurn = firstTurnCand;
-      for (let step = 0; step < n; step++) {
-        const idx = (firstTurnCand + step) % n;
-        const c = tbl.seats[idx];
-        if (c && !c.folded && !c.busted && !c.allIn && c.stack > 0) {
-          chosenTurn = idx;
-          break;
+      if (activeIdx.length === 2) {
+        const sbSeat = tbl.seats[sbPos];
+        const bbSeat = tbl.seats[bbPos];
+        if (sbSeat && !sbSeat.folded && !sbSeat.busted && !sbSeat.allIn && sbSeat.stack > 0) {
+          tbl.turnIdx = sbPos;
+        } else if (bbSeat && !bbSeat.folded && !bbSeat.busted && !bbSeat.allIn && bbSeat.stack > 0) {
+          tbl.turnIdx = bbPos;
+        } else {
+          duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts, payouts);
+          return tbl;
         }
+      } else {
+        const n = tbl.seats.length;
+        let chosenTurn = firstTurnCand;
+        for (let step = 0; step < n; step++) {
+          const idx = (firstTurnCand + step) % n;
+          const c = tbl.seats[idx];
+          if (c && !c.folded && !c.busted && !c.allIn && c.stack > 0) {
+            chosenTurn = idx;
+            break;
+          }
+        }
+        tbl.turnIdx = chosenTurn;
       }
-      tbl.turnIdx = chosenTurn;
+
       tbl.turnDeadline = Date.now() + TURN_TIMEOUT_MS;
       tbl.updatedAt = Date.now();
       return tbl;
     });
 
-    await processPokerPostEffects(tid, knockouts, duelWinnerId);
+    await processPokerPostEffects(tid, knockouts, duelWinnerId, payouts);
   }
 
-  async function applyPokerPlayerAction(tid, actorId, action, raiseTo = 0) {
-    pushTelemetryAction(`poker_act:${actorId}:${action}${raiseTo ? ':' + raiseTo : ''}`);
+  async function applyPokerPlayerAction(tid, actorId, action, raiseTo = 0, isAutoTimeout = false) {
+    // Быстрая защита на клиенте: если уже Showdown / ожидание / раздача завершена — игнорируем клики (Блок 2 п. 4/2)
+    if (!isAutoTimeout && _livePokerState && String(_livePokerState.tableId) === String(tid)) {
+      if (_livePokerState.stage === 'showdown' || _livePokerState.stage === 'waiting' || _livePokerState.stage === 'finished' || _livePokerState.winnerBanner) {
+        return;
+      }
+    }
+
+    pushTelemetryAction(`poker_act:${actorId}:${action}${raiseTo ? ':' + raiseTo : ''}${isAutoTimeout ? ':timeout' : ''}`);
     let knockouts = [];
+    let payouts = [];
+    let kickedSeats = [];
     let duelWinnerId = '';
+    let shouldDeleteTable = false;
 
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
       if (!tbl) return tbl;
       normalizePokerTable(tbl);
-      if (!['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return tbl;
+      if (tbl.stage === 'showdown' || tbl.stage === 'waiting' || tbl.stage === 'finished' || tbl.winnerBanner) return;
+      if (!['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return;
 
       const seat = tbl.seats[tbl.turnIdx];
-      if (!seat || String(seat.id) !== String(actorId)) return tbl;
+      if (!seat || String(seat.id) !== String(actorId)) return;
+
+      const now = Date.now();
+      if (isAutoTimeout && !seat.isBot) {
+        seat.missedTurns = (Number(seat.missedTurns) || 0) + 1;
+      } else {
+        seat.missedTurns = 0;
+        seat.lastActiveTs = now;
+      }
 
       const toCall = Math.max(0, tbl.currentBet - seat.bet);
       if (action === 'fold' && toCall > 0) {
         seat.folded = true;
         seat.acted = true;
-        seat.status = 'Пас 🍂';
-        tbl.logs = tbl.logs.slice(-11).concat([`🍂 ${seat.name}: Пас`]);
+        seat.status = isAutoTimeout ? 'Авто-пас ⏱' : 'Пас 🍂';
+        tbl.logs = tbl.logs.slice(-11).concat([`🍂 ${seat.name}: ${isAutoTimeout ? 'Авто-пас (таймаут)' : 'Пас'}`]);
       } else if (action === 'check' || (action === 'fold' && toCall === 0) || (action === 'call' && toCall === 0)) {
         seat.acted = true;
-        seat.status = 'Чек 🌿';
-        tbl.logs = tbl.logs.slice(-11).concat([`🌿 ${seat.name}: Чек`]);
+        seat.status = isAutoTimeout ? 'Авто-чек ⏱' : 'Чек 🌿';
+        tbl.logs = tbl.logs.slice(-11).concat([`🌿 ${seat.name}: ${isAutoTimeout ? 'Авто-чек (таймаут)' : 'Чек'}`]);
       } else if (action === 'call') {
         const pay = Math.min(seat.stack, toCall);
         seat.stack -= pay;
@@ -2369,9 +3434,36 @@
         tbl.logs = tbl.logs.slice(-11).concat([`🪓 ${seat.name}: Рейз до ${fmt(seat.bet)}`]);
       }
 
+      // АВТО-КИК ЗА AFK (2 пропуска хода подряд или > 45 сек бездействия при таймауте) — Блок 2 п. 5/3
+      if (isAutoTimeout && !seat.isBot && (seat.missedTurns >= 2 || (now - (Number(seat.lastActiveTs) || now) > 45000))) {
+        seat.folded = true;
+        seat.acted = true;
+        kickedSeats.push({ id: seat.id, name: seat.name, stack: seat.stack, isBot: false });
+        tbl.logs = tbl.logs.slice(-11).concat([`🥾 ${seat.name} исключён из-за стола (AFK: 2 пропуска хода)`]);
+        tbl.seats.splice(tbl.turnIdx, 1);
+
+        const isDuel = String(tid).startsWith('duel_');
+        const remAlive = tbl.seats.filter(s => !s.busted && s.stack > 0);
+        const remHumans = tbl.seats.filter(s => !s.isBot);
+
+        if (isDuel && remAlive.length >= 1) {
+          duelWinnerId = remAlive[0].id;
+          remAlive[0].stack += tbl.pot;
+          tbl.pot = 0;
+          tbl.stage = 'finished';
+          tbl.winnerBanner = `🏆 Победа ${remAlive[0].name} (соперник AFK)`;
+          tbl.updatedAt = now;
+          return tbl;
+        }
+        if (remHumans.length === 0) {
+          shouldDeleteTable = true;
+        }
+        if (tbl.turnIdx >= tbl.seats.length) tbl.turnIdx = 0;
+      }
+
       const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
       if (contenders.length <= 1) {
-        duelWinnerId = resolveShowdownInPlace(tbl, tid, knockouts);
+        duelWinnerId = resolveShowdownInPlace(tbl, tid, knockouts, payouts);
         return tbl;
       }
 
@@ -2393,18 +3485,32 @@
         return tbl;
       }
 
-      duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+      duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts, payouts);
       return tbl;
     });
 
-    await processPokerPostEffects(tid, knockouts, duelWinnerId);
+    await processPokerPostEffects(tid, knockouts, duelWinnerId, payouts, kickedSeats, shouldDeleteTable);
+  }
+
+  // Алиас pokerAction для совместимости
+  const pokerAction = applyPokerPlayerAction;
+
+  // Проверка: имеет ли право текущий клиент запускать авто-раздачу (ТОЛЬКО первый активный живой игрок за столом)
+  function isLeadingPokerClient(tbl, myId) {
+    if (!tbl || !Array.isArray(tbl.seats)) return false;
+    const firstHuman = tbl.seats.find(s => s && !s.isBot && !s.busted && s.stack > 0);
+    if (firstHuman) return String(firstHuman.id) === String(myId);
+    const anyHuman = tbl.seats.find(s => s && !s.isBot);
+    return anyHuman ? String(anyHuman.id) === String(myId) : false;
   }
 
   // Надёжный 5-секундный Watchdog: автоматически устраняет любые зависания WAITING / Ривера / All-In
   async function recoverStuckPokerTable(tid) {
     let knockouts = [];
+    let payouts = [];
     let duelWinnerId = '';
-    let shouldDealNew = false;
+    let shouldDealFromStage = '';
+    const me = getMe();
 
     await runTransaction(`poker_tables/${encodeURIComponent(tid)}`, tbl => {
       if (!tbl) return tbl;
@@ -2414,17 +3520,15 @@
 
       if (tbl.stage === 'waiting') {
         const alive = tbl.seats.filter(s => s.stack > 0 && !s.busted);
-        if (alive.length >= 2 && idleMs >= STUCK_WATCHDOG_MS) {
-          shouldDealNew = true;
-          tbl.updatedAt = now;
+        if (alive.length >= 2 && idleMs >= STUCK_WATCHDOG_MS && isLeadingPokerClient(tbl, me.id)) {
+          shouldDealFromStage = 'waiting';
         }
         return tbl;
       }
 
       if (tbl.stage === 'showdown') {
-        if (now > (tbl.turnDeadline || 0) || idleMs >= STUCK_WATCHDOG_MS) {
-          shouldDealNew = true;
-          tbl.updatedAt = now;
+        if ((now > (tbl.turnDeadline || 0) || idleMs >= STUCK_WATCHDOG_MS) && isLeadingPokerClient(tbl, me.id)) {
+          shouldDealFromStage = 'showdown';
         }
         return tbl;
       }
@@ -2437,7 +3541,7 @@
 
       const contenders = tbl.seats.filter(s => !s.folded && !s.busted);
       if (contenders.length <= 1) {
-        duelWinnerId = resolveShowdownInPlace(tbl, tid, knockouts);
+        duelWinnerId = resolveShowdownInPlace(tbl, tid, knockouts, payouts);
         return tbl;
       }
 
@@ -2446,7 +3550,7 @@
       const pendingActors = tbl.seats.filter(s => !s.folded && !s.busted && !s.allIn && s.stack > 0 && (!s.acted || s.bet < tbl.currentBet));
 
       if (pendingActors.length === 0) {
-        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts, payouts);
         return tbl;
       }
 
@@ -2462,16 +3566,16 @@
             return tbl;
           }
         }
-        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts);
+        duelWinnerId = advancePokerStreetsInPlace(tbl, tid, knockouts, payouts);
         return tbl;
       }
 
       return tbl;
     });
 
-    await processPokerPostEffects(tid, knockouts, duelWinnerId);
-    if (shouldDealNew) {
-      await startTableNewHand(tid);
+    await processPokerPostEffects(tid, knockouts, duelWinnerId, payouts);
+    if (shouldDealFromStage) {
+      await startTableNewHand(tid, shouldDealFromStage);
     }
   }
 
@@ -2504,6 +3608,7 @@
     body.innerHTML = `
       <div class="bg-poker-shell">
         <div class="bg-ptop" id="pokerTopBar"></div>
+        <div id="pokerChatDrawerWrap"></div>
         <div class="bg-table-wrap${woodSliceMode ? ' wood-slice' : ''}" id="pokerTableWrap">
           <div class="bg-table${woodSliceMode ? ' wood-slice' : ''}" id="pokerTableSurface"></div>
           <div class="bg-center">
@@ -2519,13 +3624,20 @@
       </div>
     `;
 
+    const chatCtrl = createMiniChatController(
+      body,
+      '#pokerChatToggleBtn',
+      '#pokerChatDrawerWrap',
+      `poker_tables/${encodeURIComponent(tableId)}`
+    );
+
     function scheduleBotMoveIfNeeded(tbl) {
       if (!tbl || !['preflop', 'flop', 'turn', 'river'].includes(tbl.stage)) return;
       const seats = tbl.seats || [];
       const turnSeat = seats[tbl.turnIdx];
       if (!turnSeat || !turnSeat.isBot || turnSeat.folded || turnSeat.busted || turnSeat.allIn) return;
 
-      const stateKey = `${tbl.stage}:${tbl.turnIdx}:${tbl.currentBet}:${(tbl.board || []).length}:${tbl.pot}`;
+      const stateKey = `${tbl.handId || 0}:${tbl.stage}:${tbl.turnIdx}:${tbl.currentBet}:${(tbl.board || []).length}:${tbl.pot}`;
       const now = Date.now();
       if (botLock.key === stateKey && now - botLock.ts < 2400) return;
 
@@ -2587,6 +3699,8 @@
       currentTbl = tbl;
       _livePokerState = Object.assign({ tableId, isTournament }, tbl);
 
+      chatCtrl.onSyncChat(tbl.chat);
+
       if (tbl.stage && tbl.stage !== lastLoggedStage) {
         pushTelemetryAction(`poker_stage:${lastLoggedStage || 'init'}->${tbl.stage}`);
         lastLoggedStage = tbl.stage;
@@ -2596,7 +3710,8 @@
       const mySeatIdx = seats.findIndex(s => String(s.id) === me.id);
       const lvl = Number(tbl.blindLevel) || 1;
       const bl = BLIND_LEVELS[Math.min(BLIND_LEVELS.length - 1, lvl - 1)];
-      const isActiveHand = ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage);
+      const isShowdownOrWaiting = tbl.stage === 'showdown' || tbl.stage === 'waiting' || tbl.stage === 'finished' || Boolean(tbl.winnerBanner);
+      const isActiveHand = ['preflop', 'flop', 'turn', 'river'].includes(tbl.stage) && !isShowdownOrWaiting;
       const isDuel = String(tableId).startsWith('duel_');
 
       // Определяем сигнатуру текущей раздачи, чтобы анимировать вылет карт ровно при их появлении
@@ -2606,7 +3721,7 @@
         dealtHoleKeys.clear();
         dealtBoardKeys.clear();
       } else {
-        const nextSig = seats.map(s => `${s.id}:${(s.cards || []).join('')}`).join('|');
+        const nextSig = `${tbl.handId || 0}:` + seats.map(s => `${s.id}:${(s.cards || []).join('')}`).join('|');
         if (nextSig !== currentHandSig) {
           currentHandSig = nextSig;
           dealtHoleKeys.clear();
@@ -2621,11 +3736,13 @@
           <span class="bg-chip gold">Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵</span>
           <span class="bg-chip">За столом: ${seats.filter(s => !s.busted).length}/${seats.length}</span>
           <div class="bg-row" style="gap:5px">
+            <button class="bg-btn sm ghost" id="pokerChatToggleBtn">💬 Чат <span class="bg-chat-badge" hidden>0</span></button>
             <button class="bg-btn sm ghost" id="pokerSurfaceBtn" title="Сменить текстуру стола">${woodSliceMode ? '🌿 Сукно' : '🪵 Спил'}</button>
-            ${!isActiveHand && tbl.stage !== 'finished' ? `<button class="bg-btn sm green" id="pokerDealBtn">🃏 Раздать карты</button>` : ''}
+            ${!isActiveHand && tbl.stage !== 'finished' && seats.filter(s => !s.busted && s.stack > 0).length >= 2 ? `<button class="bg-btn sm green" id="pokerDealBtn">🃏 Раздать</button>` : ''}
             ${!isDuel && !isTournament && !seats.some(s => s.isBot) && seats.length < 6 ? `<button class="bg-btn sm wood" id="pokerAddBotBtn">🤖 +Бот</button>` : ''}
           </div>
         `;
+        chatCtrl.bindToggle();
         const surfBtn = body.querySelector('#pokerSurfaceBtn');
         if (surfBtn) {
           surfBtn.onclick = () => {
@@ -2640,9 +3757,9 @@
           };
         }
         const dealBtn = body.querySelector('#pokerDealBtn');
-        if (dealBtn) dealBtn.onclick = () => startTableNewHand(tableId);
+        if (dealBtn) dealBtn.onclick = () => startTableNewHand(tableId, tbl.stage);
         const addBotBtn = body.querySelector('#pokerAddBotBtn');
-        if (addBotBtn) addBotBtn.onclick = async () => { await seatBotAtPokerTable(tableId, 20000); await startTableNewHand(tableId); };
+        if (addBotBtn) addBotBtn.onclick = async () => { await seatBotAtPokerTable(tableId, 20000); await startTableNewHand(tableId, 'waiting'); };
       }
 
       body.querySelector('#pokerPot').innerHTML = `${stickSvg(true)} Банк: ${fmt(tbl.pot)} 🪵`;
@@ -2755,10 +3872,11 @@
       // Запускаем плавный вылет всех новых карт (карманных и общих) из щели пенька
       animatePendingCardsFromStump();
 
+      // МГНОВЕННАЯ БЛОКИРОВКА КНОПОК ДЕЙСТВИЙ ПРИ SHOWDOWN / WAITING / WINNERBANNER (Блок 2 п. 4/2)
       const ctrl = body.querySelector('#pokerControls');
-      const isMyTurn = mySeatIdx >= 0 && isActiveHand && tbl.turnIdx === mySeatIdx;
+      const isMyTurn = !isShowdownOrWaiting && mySeatIdx >= 0 && isActiveHand && tbl.turnIdx === mySeatIdx;
       const mySeat = mySeatIdx >= 0 ? seats[mySeatIdx] : null;
-      const ctrlKey = `${isMyTurn ? 1 : 0}:${mySeatIdx}:${tbl.stage}:${tbl.turnIdx}:${tbl.currentBet}:${mySeat ? mySeat.stack : 0}:${mySeat ? mySeat.bet : 0}`;
+      const ctrlKey = `${isMyTurn ? 1 : 0}:${isShowdownOrWaiting ? 1 : 0}:${mySeatIdx}:${tbl.stage}:${tbl.winnerBanner || ''}:${tbl.turnIdx}:${tbl.currentBet}:${mySeat ? mySeat.stack : 0}:${mySeat ? mySeat.bet : 0}:${seats.length}`;
 
       if (ctrlKey !== lastCtrlKey) {
         lastCtrlKey = ctrlKey;
@@ -2782,25 +3900,38 @@
           if (slider && rTxt) {
             slider.oninput = () => { rTxt.textContent = fmt(slider.value); };
           }
-          ctrl.querySelector('#actFold').onclick = () => applyPokerPlayerAction(tableId, me.id, 'fold');
-          ctrl.querySelector('#actCall').onclick = () => applyPokerPlayerAction(tableId, me.id, toCall === 0 ? 'check' : 'call');
+          const disableAllActBtns = () => {
+            ctrl.querySelectorAll('button').forEach(b => { b.disabled = true; });
+          };
+          ctrl.querySelector('#actFold').onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, 'fold'); };
+          ctrl.querySelector('#actCall').onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, toCall === 0 ? 'check' : 'call'); };
           const raiseBtn = ctrl.querySelector('#actRaise');
           if (raiseBtn && canRaise) {
-            raiseBtn.onclick = () => applyPokerPlayerAction(tableId, me.id, 'raise', slider ? Number(slider.value) : minRaise);
+            raiseBtn.onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, 'raise', slider ? Number(slider.value) : minRaise); };
           }
-          ctrl.querySelector('#actAllIn').onclick = () => applyPokerPlayerAction(tableId, me.id, 'raise', maxRaise);
+          ctrl.querySelector('#actAllIn').onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, 'raise', maxRaise); };
         } else if (mySeatIdx === -1 && tbl.stage !== 'finished') {
           ctrl.innerHTML = `<div class="bg-row"><button class="bg-btn green" id="sitHereBtn" style="width:100%">🪵 Сесть за стол (20 000 🪵)</button></div>`;
           ctrl.querySelector('#sitHereBtn').onclick = async () => {
             await seatPlayerAtPokerTable(tableId, tbl.title, isTournament, 20000, lvl);
-            await startTableNewHand(tableId);
+            await startTableNewHand(tableId, tbl.stage);
           };
         } else if (tbl.stage === 'finished') {
           ctrl.innerHTML = `<div class="bg-result"><h3>🏆 ${esc(tbl.winnerBanner || 'Матч завершён!')}</h3></div>`;
-        } else if (tbl.stage === 'showdown') {
+        } else if (tbl.stage === 'showdown' || tbl.winnerBanner) {
           ctrl.innerHTML = `<div class="bg-muted" style="text-align:center;font-weight:700;color:var(--bg-gold)">${esc(tbl.winnerBanner || 'Подведение итогов раздачи...')}</div>`;
         } else if (tbl.stage === 'waiting') {
-          ctrl.innerHTML = `<div class="bg-muted" style="text-align:center">Ожидание второго игрока за столом...</div>`;
+          const inviteBet = tbl.prizePool ? Math.round(tbl.prizePool / 2) : (mySeat ? mySeat.stack : 10000);
+          ctrl.innerHTML = `
+            <div style="display:flex;flex-direction:column;gap:8px;align-items:center">
+              <div class="bg-muted" style="text-align:center">⏳ Ожидание второго игрока за столом...</div>
+              <button class="bg-btn green" id="pokerInviteTgBtn" style="width:100%">📲 Пригласить друга в Telegram</button>
+            </div>
+          `;
+          const invBtn = ctrl.querySelector('#pokerInviteTgBtn');
+          if (invBtn) {
+            invBtn.onclick = () => shareDuelInviteToTelegram(tableId, 'poker', inviteBet);
+          }
         } else {
           const actor = seats[tbl.turnIdx];
           ctrl.innerHTML = `<div class="bg-muted" style="text-align:center">⏳ Ходит <b>${esc(actor ? actor.name : 'соперник')}</b>...</div>`;
@@ -2820,19 +3951,20 @@
       const now = Date.now();
       const idleMs = now - (Number(currentTbl.updatedAt) || 0);
 
+      // Переход showdown -> preflop запускает ТОЛЬКО один ведущий клиент (первый активный игрок в seats[0])
       if (currentTbl.stage === 'showdown' && now > (currentTbl.turnDeadline || 0)) {
-        if (!watchdogBusy) {
+        if (isLeadingPokerClient(currentTbl, me.id) && !watchdogBusy) {
           watchdogBusy = true;
-          try { await startTableNewHand(tableId); } finally { watchdogBusy = false; }
+          try { await startTableNewHand(tableId, 'showdown'); } finally { watchdogBusy = false; }
         }
         return;
       }
 
       if (currentTbl.stage === 'waiting' && idleMs >= STUCK_WATCHDOG_MS) {
         const alive = (currentTbl.seats || []).filter(s => s.stack > 0 && !s.busted);
-        if (alive.length >= 2 && !watchdogBusy) {
+        if (alive.length >= 2 && isLeadingPokerClient(currentTbl, me.id) && !watchdogBusy) {
           watchdogBusy = true;
-          try { await startTableNewHand(tableId); } finally { watchdogBusy = false; }
+          try { await startTableNewHand(tableId, 'waiting'); } finally { watchdogBusy = false; }
         }
         return;
       }
@@ -2849,7 +3981,7 @@
       const seat = (currentTbl.seats || [])[currentTbl.turnIdx];
       if (seat && seat.isBot && !seat.folded && !seat.busted && !seat.allIn) {
         scheduleBotMoveIfNeeded(currentTbl);
-        if (idleMs >= STUCK_WATCHDOG_MS && !watchdogBusy) {
+        if (idleMs >= STUCK_WATCHDOG_MS && isLeadingPokerClient(currentTbl, me.id) && !watchdogBusy) {
           watchdogBusy = true;
           try {
             const dec = decideBotPokerAction(currentTbl, seat);
@@ -2862,17 +3994,19 @@
       }
 
       const seatInvalid = !seat || seat.folded || seat.busted || seat.allIn || seat.stack <= 0;
-      if ((seatInvalid && idleMs >= STUCK_WATCHDOG_MS) && !watchdogBusy) {
+      if ((seatInvalid && idleMs >= STUCK_WATCHDOG_MS) && isLeadingPokerClient(currentTbl, me.id) && !watchdogBusy) {
         watchdogBusy = true;
         try { await recoverStuckPokerTable(tableId); } finally { watchdogBusy = false; }
         return;
       }
 
-      if (rem <= 0 && seat && !watchdogBusy) {
+      // При истечении таймера хода (rem <= 0) делаем авто-фолд / авто-чек и увеличиваем missedTurns (при >= 2 авто-кик)
+      const canTriggerTimeout = String(seat && seat.id) === String(me.id) || (isLeadingPokerClient(currentTbl, me.id) && rem <= -1200);
+      if (rem <= 0 && seat && canTriggerTimeout && !watchdogBusy) {
         watchdogBusy = true;
         try {
           const toCall = Math.max(0, (currentTbl.currentBet || 0) - (seat.bet || 0));
-          await applyPokerPlayerAction(tableId, seat.id, toCall === 0 ? 'check' : 'fold');
+          await applyPokerPlayerAction(tableId, seat.id, toCall === 0 ? 'check' : 'fold', 0, true);
         } finally {
           watchdogBusy = false;
         }
@@ -3544,6 +4678,7 @@
       actionBreadcrumbLog.shift();
     }
   }
+  window.__oreoBlackBox = pushTelemetryAction;
 
   function recordCapturedErrorItem(message, stack, source) {
     const now = Date.now();
@@ -4022,12 +5157,25 @@
     }, { passive: true, capture: true });
   }
 
-  function doesCrashMatchDate(item, ymdFilter) {
+  function getCrashItemYmd(item) {
+    if (!item || typeof item !== 'object') return '';
+    if (item.date && /^\d{4}-\d{2}-\d{2}$/.test(String(item.date))) return String(item.date);
+    if (item.timestamp) return formatLocalYmd(item.timestamp);
+    return '';
+  }
+
+  function doesCrashMatchDate(item, ymdFilter, fromYmd = '', toYmd = '') {
     if (!item || typeof item !== 'object') return false;
+    const itemYmd = getCrashItemYmd(item);
+    if (fromYmd || toYmd) {
+      if (!itemYmd) return true;
+      if (fromYmd && itemYmd < fromYmd) return false;
+      if (toYmd && itemYmd > toYmd) return false;
+      return true;
+    }
     if (!ymdFilter || ymdFilter === 'all') return true;
-    if (item.date === ymdFilter) return true;
+    if (item.date === ymdFilter || itemYmd === ymdFilter) return true;
     if (item.timestamp) {
-      if (formatLocalYmd(item.timestamp) === ymdFilter) return true;
       const utcYmd = new Date(Number(item.timestamp)).toISOString().slice(0, 10);
       if (utcYmd === ymdFilter) return true;
     }
@@ -4165,39 +5313,87 @@
   }
 
   let _admCrashDate = formatLocalYmd(Date.now());
-  let _admCrashAllDates = false;
+  let _admCrashDateFrom = '';
+  let _admCrashDateTo = '';
+  let _admCrashAllDates = true;
+
+  // Одноразовая авто-очистка старых отработанных логов за 03.11–06.11 при старте патча (Блок 6 п. 16)
+  async function cleanupLegacyCrashLogsOnce() {
+    const MIGRATION_KEY = 'oreo_crash_logs_cleared_v20261106_patch';
+    try {
+      if (localStorage.getItem(MIGRATION_KEY) === '1') return;
+      localStorage.setItem(MIGRATION_KEY, '1');
+    } catch (e) {}
+    try {
+      const meta = await fbGet('telemetry_meta/cleared_v20261106_patch');
+      if (meta && meta.cleared) return;
+      // Удаляем отработанные отчёты 03.11 - 06.11, чтобы статистика собиралась с чистого листа
+      await Promise.all([
+        fbDelete('crash_reports/2026-11-03'),
+        fbDelete('crash_reports/2026-11-04'),
+        fbDelete('crash_reports/2026-11-05'),
+        fbDelete('crash_reports/2026-11-06'),
+        fbPut('telemetry_meta/cleared_v20261106_patch', { cleared: true, clearedAt: Date.now() })
+      ]);
+      _memCache.delete('crash_reports');
+    } catch (e) {}
+  }
+
+  function computePeriodLabelFromReports(items, fallbackLabel = 'ALL') {
+    if (!items || !items.length) return fallbackLabel;
+    const dates = items.map(getCrashItemYmd).filter(Boolean).sort();
+    if (!dates.length) return fallbackLabel;
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    return first === last ? first : `${first}_to_${last}`;
+  }
 
   function renderAdminCrashesSub(sub) {
     sub.innerHTML = `
       <div class="bg-sec">
-        <h3>🧯 Телеметрия, баг-репорты и выгрузка (.txt)</h3>
-        <div class="bg-row" style="margin-bottom:8px">
-          <input type="date" class="bg-input" id="admCrashDateInp" value="${esc(_admCrashDate)}" style="max-width:170px">
-          <button class="bg-btn sm ${_admCrashAllDates ? '' : 'ghost'}" id="admCrashToggleAll">
-            ${_admCrashAllDates ? '📅 Показаны: ВСЕ дни' : '📅 Только за выбранный день'}
-          </button>
-          <button class="bg-btn sm wood" id="admCrashTestBtn">🧪 Тест плашки</button>
+        <h3>🧯 Телеметрия, баг-репорты и сводная выгрузка (.txt)</h3>
+        <div class="bg-row" style="margin-bottom:8px;gap:6px">
+          <button class="bg-btn green" id="admCrashDownloadAllUnifiedBtn" style="flex:1">📥 Скачать ВСЕ активные логи (Единый отчет за период)</button>
+          <button class="bg-btn red" id="admCrashClearAllBtn">🗑 Обнулить текущие краш-логи</button>
         </div>
-        <div class="bg-row" style="margin-bottom:10px">
-          <button class="bg-btn green" id="admCrashDownloadBtn">📥 Скачать crashes_${esc(_admCrashAllDates ? 'all' : _admCrashDate)}.txt</button>
-          <button class="bg-btn ghost" id="admCrashCopyBtn">📋 Скопировать отчёт</button>
+        <div class="bg-item" style="flex-direction:column;align-items:stretch;gap:6px;margin-bottom:8px">
+          <div class="bg-row sp">
+            <small>📅 Фильтр по периоду («От даты» — «До даты») в один сводный файл:</small>
+            <button class="bg-btn sm ${_admCrashAllDates && !_admCrashDateFrom && !_admCrashDateTo ? 'green' : 'ghost'}" id="admCrashToggleAll">
+              ${_admCrashAllDates && !_admCrashDateFrom && !_admCrashDateTo ? '✅ Показаны: ВСЕ дни' : 'Показать ВСЕ дни'}
+            </button>
+          </div>
+          <div class="bg-row" style="gap:6px;flex-wrap:wrap">
+            <label style="font-size:11px;color:#ffd9a0">От: <input type="date" class="bg-input" id="admCrashDateFromInp" value="${esc(_admCrashDateFrom)}" style="max-width:142px;padding:4px 6px"></label>
+            <label style="font-size:11px;color:#ffd9a0">До: <input type="date" class="bg-input" id="admCrashDateToInp" value="${esc(_admCrashDateTo)}" style="max-width:142px;padding:4px 6px"></label>
+            <button class="bg-btn sm wood" id="admCrashApplyRangeBtn">🔍 Применить диапазон</button>
+            <button class="bg-btn sm green" id="admCrashDownloadFilteredBtn">📥 Скачать выборку (.txt)</button>
+            <button class="bg-btn sm ghost" id="admCrashCopyBtn">📋 Копировать</button>
+            <button class="bg-btn sm ghost" id="admCrashTestBtn">🧪 Тест</button>
+          </div>
         </div>
         <div id="admCrashStats" class="bg-muted" style="margin-bottom:8px">Загрузка узла crash_reports из Firebase...</div>
         <div id="admCrashList"></div>
       </div>
     `;
 
+    let allReportsInDb = [];
     let latestReports = [];
 
-    const dateInp = sub.querySelector('#admCrashDateInp');
-    dateInp.onchange = () => {
-      _admCrashDate = dateInp.value || formatLocalYmd(Date.now());
-      _admCrashAllDates = false;
+    const fromInp = sub.querySelector('#admCrashDateFromInp');
+    const toInp = sub.querySelector('#admCrashDateToInp');
+
+    sub.querySelector('#admCrashApplyRangeBtn').onclick = () => {
+      _admCrashDateFrom = (fromInp && fromInp.value) || '';
+      _admCrashDateTo = (toInp && toInp.value) || '';
+      _admCrashAllDates = !(_admCrashDateFrom || _admCrashDateTo);
       renderAdminCrashesSub(sub);
     };
 
     sub.querySelector('#admCrashToggleAll').onclick = () => {
-      _admCrashAllDates = !_admCrashAllDates;
+      _admCrashDateFrom = '';
+      _admCrashDateTo = '';
+      _admCrashAllDates = true;
       renderAdminCrashesSub(sub);
     };
 
@@ -4209,21 +5405,60 @@
       );
     };
 
-    sub.querySelector('#admCrashDownloadBtn').onclick = () => {
-      const label = _admCrashAllDates ? 'all' : _admCrashDate;
-      const txt = buildStructuredCrashReportTxt(latestReports, label);
-      downloadTextFile(`crashes_${label}.txt`, txt);
-      toast(`📥 Файл crashes_${label}.txt сформирован (${latestReports.length} записей)`);
+    // Главная кнопка: Скачать ВСЕ активные логи за весь период одним общим файлом
+    sub.querySelector('#admCrashDownloadAllUnifiedBtn').onclick = () => {
+      const sourceArr = allReportsInDb.length ? allReportsInDb : latestReports;
+      const periodLabel = computePeriodLabelFromReports(sourceArr, formatLocalYmd(Date.now()));
+      const txt = buildStructuredCrashReportTxt(sourceArr, `ALL ACTIVE LOGS: ${periodLabel}`);
+      downloadTextFile(`crashes_unified_${periodLabel}.txt`, txt);
+      toast(`📥 Единый отчёт crashes_unified_${periodLabel}.txt скачан (${sourceArr.length} событий)!`);
+    };
+
+    sub.querySelector('#admCrashDownloadFilteredBtn').onclick = () => {
+      const rangeLabel = (_admCrashDateFrom || _admCrashDateTo)
+        ? `${_admCrashDateFrom || 'start'}_to_${_admCrashDateTo || 'now'}`
+        : computePeriodLabelFromReports(latestReports, _admCrashAllDates ? 'all' : _admCrashDate);
+      const txt = buildStructuredCrashReportTxt(latestReports, rangeLabel);
+      downloadTextFile(`crashes_${rangeLabel}.txt`, txt);
+      toast(`📥 Файл crashes_${rangeLabel}.txt сформирован (${latestReports.length} записей)`);
     };
 
     sub.querySelector('#admCrashCopyBtn').onclick = async () => {
-      const label = _admCrashAllDates ? 'all' : _admCrashDate;
-      const txt = buildStructuredCrashReportTxt(latestReports, label);
+      const rangeLabel = (_admCrashDateFrom || _admCrashDateTo)
+        ? `${_admCrashDateFrom || 'start'}_to_${_admCrashDateTo || 'now'}`
+        : computePeriodLabelFromReports(latestReports, 'all');
+      const txt = buildStructuredCrashReportTxt(latestReports, rangeLabel);
       try {
         await navigator.clipboard.writeText(txt);
-        toast('📋 Структурированный отчёт скопирован в буфер обмена!');
+        toast('📋 Единый структурированный отчёт скопирован в буфер обмена!');
       } catch (e) {
         toast('⚠️ Буфер обмена недоступен — используйте скачивание .txt');
+      }
+    };
+
+    // Кнопка полного обнуления текущих краш-логов в Firebase и локальном кэше
+    sub.querySelector('#admCrashClearAllBtn').onclick = async () => {
+      const btn = sub.querySelector('#admCrashClearAllBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Очистка...';
+      }
+      try {
+        await fbDelete('crash_reports');
+        _memCache.delete('crash_reports');
+        _capturedErrors.length = 0;
+        if (_bugFabEl) _bugFabEl.classList.remove('has-error');
+        allReportsInDb = [];
+        latestReports = [];
+        drawCrashes({});
+        toast('🧹 Все краш-логи в Firebase и локальном кэше полностью обнулены!');
+      } catch (err) {
+        toast('⚠️ Ошибка при очистке краш-логов');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '🗑 Обнулить текущие краш-логи';
+        }
       }
     };
 
@@ -4232,16 +5467,22 @@
       const listEl = sub.querySelector('#admCrashList');
       if (!statsEl || !listEl) return;
 
-      const allArr = extractAllCrashReports(raw);
-      const filterKey = _admCrashAllDates ? 'all' : _admCrashDate;
-      latestReports = allArr.filter(r => doesCrashMatchDate(r, filterKey));
-      latestReports.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+      allReportsInDb = extractAllCrashReports(raw);
+      allReportsInDb.sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
 
+      if (_admCrashDateFrom || _admCrashDateTo) {
+        latestReports = allReportsInDb.filter(r => doesCrashMatchDate(r, 'range', _admCrashDateFrom, _admCrashDateTo));
+      } else {
+        const filterKey = _admCrashAllDates ? 'all' : _admCrashDate;
+        latestReports = allReportsInDb.filter(r => doesCrashMatchDate(r, filterKey));
+      }
+
+      const periodStr = computePeriodLabelFromReports(allReportsInDb, 'нет данных').replace('_to_', ' — ');
       const usersSet = new Set(latestReports.map(r => String(r.userId || 'anon')));
-      statsEl.innerHTML = `Найдено репортов: <b style="color:var(--bg-gold)">${latestReports.length}</b> (всего в БД: ${allArr.length}) • Затронуто игроков: <b>${usersSet.size}</b> • Команда в боте: <code>/get_crashes</code>`;
+      statsEl.innerHTML = `В выборке: <b style="color:var(--bg-gold)">${latestReports.length}</b> (всего в БД: <b>${allReportsInDb.length}</b> • период БД: <b>${esc(periodStr)}</b>) • Затронуто игроков: <b>${usersSet.size}</b>`;
 
       if (!latestReports.length) {
-        listEl.innerHTML = `<div class="bg-muted">✨ За выбранный период критических ошибок и баг-репортов не зафиксировано.</div>`;
+        listEl.innerHTML = `<div class="bg-muted">✨ Активных ошибок и баг-репортов нет (база чиста).</div>`;
         return;
       }
 
@@ -4285,6 +5526,7 @@
     ensureBugReportWidget();
     registerExclusiveSkinsIntoMainGame();
     applyExclusiveSkinTheme(getLocalState().equippedSkin || 'classic');
+    cleanupLegacyCrashLogsOnce();
 
     const zoneBtn = document.getElementById('birchZoneBtn');
     const admBtn = document.getElementById('birchAdminBtn');
@@ -4331,12 +5573,13 @@
     syncAdminGrantsForMe,
     reportCrash: handleCapturedError,
     getBreadcrumbs: () => [...actionBreadcrumbLog],
-    exportCrashesTxt: async (ymd = formatLocalYmd(Date.now())) => {
+    exportCrashesTxt: async (ymd = 'all') => {
       const raw = await fbGet('crash_reports');
       const arr = extractAllCrashReports(raw);
-      const filtered = arr.filter(r => doesCrashMatchDate(r, ymd));
-      const txt = buildStructuredCrashReportTxt(filtered, ymd);
-      downloadTextFile(`crashes_${ymd}.txt`, txt);
+      const filtered = ymd === 'all' ? arr : arr.filter(r => doesCrashMatchDate(r, ymd));
+      const periodLabel = ymd === 'all' ? computePeriodLabelFromReports(filtered, 'all') : ymd;
+      const txt = buildStructuredCrashReportTxt(filtered, periodLabel);
+      downloadTextFile(`crashes_${periodLabel}.txt`, txt);
       return txt;
     }
   };

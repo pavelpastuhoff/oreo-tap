@@ -790,3 +790,31 @@
   border-color: rgba(255, 215, 64, 0.4);
   color: #FFD740;
 }
+
+
+.ab-admin-bar {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.ab-adm-btn.ab-delete {
+  border-color: rgba(255, 82, 82, 0.55);
+  color: #FF5252;
+  grid-column: span 1;
+}
+
+/* Постоянная шторка купона ставки (вне списка карточек) */
+.ab-quick-sheet {
+  flex: 0 0 auto;
+  padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--ab-bg);
+  border-top: 1px solid rgba(198, 255, 0, 0.25);
+}
+
+.ab-quick-sheet .ab-drawer-top .ab-icon-btn {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.ab-clear-archive {
+  white-space: nowrap;
+}
