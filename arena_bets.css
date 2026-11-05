@@ -387,58 +387,49 @@
   border-color: rgba(198, 255, 0, 0.35);
 }
 
-/* 1. Двухэтажная шапка карточки: Иконка + Полное название сверху, Таймер + Банк снизу */
+/* 1. Двухэтажная шапка карточки: Полное название на верхней строке, Иконка + Таймер + Банк на нижней */
 .ab-card-header {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
   min-width: 0;
-}
-
-.ab-card-title-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
   width: 100%;
-  min-width: 0;
-}
-
-.ab-cat-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: var(--ab-surface-2);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 19px;
-  flex-shrink: 0;
 }
 
 .ab-event-title {
-  flex: 1;
-  min-width: 0;
   font-size: 15px;
-  font-weight: 650;
-  line-height: 1.3;
+  font-weight: 700;
   color: #fff;
-  white-space: normal;
   word-break: break-word;
-  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.3;
+  margin-bottom: 6px;
+  width: 100%;
 }
 
 .ab-header-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   width: 100%;
+  min-width: 0;
+}
+
+.ab-cat-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--ab-surface-2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
 }
 
 .ab-timer-badge {
-  padding: 3px 8px;
+  padding: 4px 8px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -462,7 +453,8 @@
 }
 
 .ab-pool-badge {
-  padding: 3px 9px;
+  margin-left: auto;
+  padding: 4px 9px;
   border-radius: 8px;
   background: var(--ab-lime-dim);
   border: 1px solid var(--ab-lime-border);

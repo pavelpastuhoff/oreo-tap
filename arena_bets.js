@@ -1043,13 +1043,11 @@
 
       card.innerHTML = `
         <div class="ab-card-header">
-          <div class="ab-card-title-row">
-            <div class="ab-cat-icon">${escapeHtml(ev.icon || '🎮')}</div>
-            <div class="ab-event-title">${escapeHtml(ev.title)}</div>
-          </div>
+          <div class="ab-event-title">${escapeHtml(ev.title)}</div>
           <div class="ab-header-meta">
+            <div class="ab-cat-icon">${escapeHtml(ev.icon || '🎮')}</div>
             <span class="ab-timer-badge ${timer.done ? 'ab-done' : timer.closed ? 'ab-closed' : ''}" data-timer-for="${ev.id}" data-arena-timer="${ev.id}">${timer.text}</span>
-            <span class="ab-pool-badge">🏦 ${fmtCompact(stats.realTotal)}</span>
+            <span class="ab-pool-badge">🪙 ${fmtCompact(stats.realTotal)}</span>
           </div>
         </div>
 
