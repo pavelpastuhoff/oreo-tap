@@ -632,6 +632,13 @@
     <div class="stat">⭐ <span id="lvl">1</span></div>
   </div>
   <div class="bar"><i id="barFill"></i></div>
+  <div class="arena-pari-capsule-wrap">
+    <button type="button" class="arena-pari-capsule" id="arenaBetsOpenBtn">
+      <span class="ab-live-dot"></span>
+      <span>🔥 ПАРИ</span>
+      <span class="ab-capsule-badge" id="arenaBetsLiveCount">2</span>
+    </button>
+  </div>
   <b id="coins" hidden>0</b>
 </div>
 
@@ -3106,8 +3113,11 @@
     playerPhoto,
     dbUrl: OREO_CONFIG.FIREBASE_DB_URL
   };
+  window.db = OREO_CONFIG.FIREBASE_DB_URL;
 })();
 </script>
 <script src="birch_games.js"></script>
+<link rel="stylesheet" href="arena_bets.css">
+<script src="arena_bets.js"></script>
 </body>
 </html>
