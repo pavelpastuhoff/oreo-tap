@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+.gitignorepython
+
+# Environment variables & secrets
+.env
+.env.*
+*.env
+*secret*
+*token*
+*credentials*.json
+*firebase-adminsdk*.json
+serviceAccount*.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*.pyc
+*$py.class
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.cache
+
+# Temporary files, logs & local tools
+.aider*
+node_modules/
+.netlify/
+crashes_*.txt
+*crash_report*.txt
+*.log
+*.db
+*.sqlite
+*.sqlite3
+.DS_Store
+Thumbs.db
+Desktop.ini

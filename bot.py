@@ -48,6 +48,13 @@ _load_local_dotenv()
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "oreo_67_bot")
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "https://oreo-67-bot.netlify.app")
+WEBHOOK_URL = (
+    os.environ.get("WEBHOOK_URL")
+    or os.environ.get("CLOUD_RUN_URL")
+    or os.environ.get("SERVICE_URL")
+    or ""
+).strip()
+WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "/webhook").strip() or "/webhook"
 API = f"https://api.telegram.org/bot{TOKEN}/"
 BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "banner.jpg")
 
@@ -379,6 +386,30 @@ def handle_callback(cb):
         edit_card(chat_id, message_id, has_photo, build_home_text(first_name), kb)
 
 
+def process_update(u):
+    if not isinstance(u, dict):
+        return
+    try:
+        if "message" in u:
+            handle_message(u["message"])
+        elif "callback_query" in u:
+            handle_callback(u["callback_query"])
+    except Exception as e:
+        print("Ошибка при обработке обновления Telegram:", e)
+
+
+def resolve_webhook_url():
+    """Формирует итоговый URL вебхука из переменных окружения Cloud Run (WEBHOOK_URL / SERVICE_URL)."""
+    raw = WEBHOOK_URL.strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlsplit(raw)
+    if not parsed.path or parsed.path == "/":
+        path = WEBHOOK_PATH if WEBHOOK_PATH.startswith("/") else f"/{WEBHOOK_PATH}"
+        return f"{raw.rstrip('/')}{path}"
+    return raw
+
+
 class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     def _respond_ok(self, send_body=True):
         body = b"OK"
@@ -397,8 +428,13 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
-        if length > 0:
-            self.rfile.read(length)
+        raw_body = self.rfile.read(length) if length > 0 else b""
+        if raw_body:
+            try:
+                update = json.loads(raw_body.decode("utf-8"))
+                process_update(update)
+            except Exception as e:
+                print("[Webhook] Ошибка разбора входящего POST-запроса:", e)
         self._respond_ok(True)
 
     def log_message(self, format, *args):
@@ -406,11 +442,12 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
 
 
 def start_healthcheck_server():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get('PORT', 8080))
     server = http.server.ThreadingHTTPServer(("0.0.0.0", port), _HealthCheckHandler)
-    t = threading.Thread(target=server.serve_forever, name="CloudRunHealthServer", daemon=True)
+    t = threading.Thread(target=server.serve_forever, name="CloudRunWebhookServer", daemon=True)
     t.start()
-    print(f"[Healthcheck] HTTP server listening on 0.0.0.0:{port}")
+    print(f"[CloudRun] HTTP/Webhook server listening on 0.0.0.0:{port}")
+    return server
 
 
 def main():
@@ -419,21 +456,31 @@ def main():
         raise RuntimeError(
             "BOT_TOKEN не найден! Задайте переменную окружения BOT_TOKEN (в Cloud Run) или создайте локальный .env."
         )
-    if "--local" in sys.argv:
-        start_healthcheck_server()
-    setup_bot_profile()
-    if "--local" not in sys.argv:
+
+    if "--netlify" in sys.argv:
+        setup_bot_profile()
         webhook_url = f"{WEBAPP_URL}/.netlify/functions/bot"
         res = call("setWebhook", url=webhook_url)
         print(f"🍪 Профиль настроен! Бот работает 24/7 через облако Netlify: {webhook_url}")
         print("Статус Webhook:", res.get("description", "OK"))
-        print("Держать компьютер или этот терминал включённым больше НЕ нужно!")
         return
 
-    call("deleteWebhook")
+    # Запускаем веб-сервер на 0.0.0.0:$PORT сразу при старте для прохождения проверок Google Cloud Run
+    start_healthcheck_server()
+    setup_bot_profile()
     admin_poker_bot.start_duel_listener(call, WEBAPP_URL)
+
+    webhook_url = resolve_webhook_url()
+    if webhook_url and "--local" not in sys.argv:
+        res = call("setWebhook", url=webhook_url)
+        print(f"🍪 Бот ОРЕО запущен в режиме Webhook на Google Cloud Run: {webhook_url}")
+        print("Статус Webhook:", res.get("description", "OK"))
+        while True:
+            time.sleep(3600)
+
+    call("deleteWebhook")
     offset = 0
-    print("🍪 Бот ОРЕО запущен в локальном режиме (--local)! Ctrl+C — остановить.")
+    print("🍪 Бот ОРЕО запущен в режиме Long Polling (HTTP-сервер активен)! Ctrl+C — остановить.")
     while True:
         try:
             updates = call("getUpdates", offset=offset, timeout=60).get("result", [])
@@ -443,10 +490,7 @@ def main():
             continue
         for u in updates:
             offset = u["update_id"] + 1
-            if "message" in u:
-                handle_message(u["message"])
-            elif "callback_query" in u:
-                handle_callback(u["callback_query"])
+            process_update(u)
 
 
 if __name__ == "__main__":
