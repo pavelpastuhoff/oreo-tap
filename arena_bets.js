@@ -34,8 +34,11 @@
   }
 
   function isAdminUser() {
-    const uid = getUserId();
-    return Number(uid) === ADMIN_ID;
+    const tgApp = window.Telegram && window.Telegram.WebApp;
+    const tgUser = tgApp && tgApp.initData && tgApp.initDataUnsafe && tgApp.initDataUnsafe.user;
+    if (tgUser && Number(tgUser.id) === ADMIN_ID) return true;
+    const host = String(location.hostname || '');
+    return host === 'localhost' || host === '127.0.0.1';
   }
 
   function getPlayerName() {

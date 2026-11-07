@@ -7,6 +7,12 @@
 .env
 .env.*
 *.env
+.envrc
+*.bak
+*.old
+*.orig
+*.dump
+*.sql
 *secret*
 *token*
 *credentials*.json

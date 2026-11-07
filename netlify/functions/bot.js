@@ -11,12 +11,45 @@
  *    GET /.netlify/functions/bot?setup=1
  */
 
-const TOKEN = process.env.BOT_TOKEN;
+const crypto = require("crypto");
+
+const rawBotToken = process.env.BOT_TOKEN;
+const TOKEN = rawBotToken ? rawBotToken.trim() : "";
+const rawWebhookSecret = process.env.WEBHOOK_SECRET;
+const WEBHOOK_SECRET = rawWebhookSecret ? rawWebhookSecret.trim() : "";
+const rawAdminSecret = process.env.ADMIN_SECRET;
+const ADMIN_SECRET = (rawAdminSecret && rawAdminSecret.trim()) || WEBHOOK_SECRET;
+
 const BOT_USERNAME = process.env.BOT_USERNAME || "oreo_67_bot";
 const WEBAPP_URL = process.env.WEBAPP_URL || "https://oreo-67-bot.netlify.app";
-const FIREBASE_DB = process.env.FIREBASE_DB_URL || "https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app";
-const API = `https://api.telegram.org/bot${TOKEN}/`;
+const FIREBASE_DB = (process.env.FIREBASE_DB_URL || "https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app").replace(/\/+$/, "");
+const ADMIN_USER_ID = Number(process.env.ADMIN_USER_ID || 594228143);
+const INTERNAL_CRON_TOKEN = crypto.randomBytes(24).toString("hex");
+const MAX_BODY_CHARS = 262144;
+const API = TOKEN ? `https://api.telegram.org/bot${TOKEN}/` : "";
 const BANNER_URL = `${WEBAPP_URL}/assets/banner.jpg`;
+
+function timingSafeMatch(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || !a || !b) return false;
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function getHeader(headersObj, lowerName) {
+  if (!headersObj || typeof headersObj !== "object") return "";
+  for (const [k, v] of Object.entries(headersObj)) {
+    if (String(k).toLowerCase() === lowerName) return String(v || "").trim();
+  }
+  return "";
+}
+
+function isAuthorizedAdminRequest(event) {
+  if (!ADMIN_SECRET) return false;
+  const hdr = getHeader(event.headers, "x-admin-secret");
+  return timingSafeMatch(hdr, ADMIN_SECRET);
+}
 
 function buildOwlReminder(name, streak, coins) {
   const safeName = esc(name || "Тапер");
@@ -252,36 +285,52 @@ async function sendCard(chatId, caption, replyMarkup) {
 
 exports.handler = async (event) => {
   const headers = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": WEBAPP_URL,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+    "X-Content-Type-Options": "nosniff"
   };
 
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
 
+  if (!TOKEN) {
+    return { statusCode: 503, headers, body: "Bot token is not configured" };
+  }
+
   const qs = event.queryStringParameters || {};
 
-  // 1. Автонастройка Webhook в 1 клик: /.netlify/functions/bot?setup=1
+  // 1. Защищённая настройка Webhook (требуется заголовок X-Admin-Secret и заданный WEBHOOK_SECRET)
   if (qs.setup === "1") {
+    if (!WEBHOOK_SECRET) {
+      return { statusCode: 503, headers, body: "WEBHOOK_SECRET is not configured" };
+    }
+    if (!isAuthorizedAdminRequest(event)) {
+      return { statusCode: 403, headers, body: "Forbidden" };
+    }
     const webhookUrl = `${WEBAPP_URL}/.netlify/functions/bot`;
-    const wh = await tgCall("setWebhook", { url: webhookUrl });
+    const wh = await tgCall("setWebhook", {
+      url: webhookUrl,
+      secret_token: WEBHOOK_SECRET,
+      allowed_updates: ["message", "callback_query", "pre_checkout_query"]
+    });
     return {
       statusCode: 200,
       headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ ok: true, webhookUrl, telegramResponse: wh }, null, 2)
+      body: JSON.stringify({ ok: Boolean(wh && wh.ok), webhookUrl })
     };
   }
 
   // 2. Генерация ссылки на оплату Telegram Stars (XTR) для магазина в игре
   if (qs.action === "invoice") {
-    const packKey = qs.pack || "magnat";
-    const pack = STAR_PACKS[packKey] || STAR_PACKS.magnat;
+    const packKey = Object.prototype.hasOwnProperty.call(STAR_PACKS, qs.pack) ? qs.pack : "magnat";
+    const pack = STAR_PACKS[packKey];
+    const cleanUid = /^\d{5,15}$/.test(String(qs.user_id || "")) ? String(qs.user_id) : "anon";
     const inv = await tgCall("createInvoiceLink", {
       title: pack.title,
       description: pack.description,
-      payload: `${pack.payload}:${qs.user_id || "anon"}`,
+      payload: `${pack.payload}:${cleanUid}`,
       provider_token: "", // Для Telegram Stars (XTR) всегда пустая строка
       currency: "XTR",
       prices: [{ label: pack.title, amount: pack.stars }]
@@ -289,15 +338,19 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(inv)
+      body: JSON.stringify({ ok: Boolean(inv && inv.ok), result: inv && inv.result ? inv.result : null })
     };
   }
 
   // 2b. Получение аватарки пользователя из Telegram по его user_id: /.netlify/functions/bot?action=avatar&user_id=12345
   if (qs.action === "avatar" && qs.user_id) {
+    const rawUid = String(qs.user_id).trim();
+    if (!/^\d{5,15}$/.test(rawUid)) {
+      return { statusCode: 400, headers, body: "" };
+    }
     try {
       const photosRes = await tgCall("getUserProfilePhotos", {
-        user_id: Number(qs.user_id),
+        user_id: Number(rawUid),
         limit: 1
       });
       const photos = photosRes && photosRes.result && photosRes.result.photos;
@@ -305,7 +358,7 @@ exports.handler = async (event) => {
         const chosen = photos[0][1] || photos[0][0];
         const fileRes = await tgCall("getFile", { file_id: chosen.file_id });
         const filePath = fileRes && fileRes.result && fileRes.result.file_path;
-        if (filePath) {
+        if (filePath && !filePath.includes("..")) {
           const imgResp = await fetch(`https://api.telegram.org/file/bot${TOKEN}/${filePath}`);
           if (imgResp.ok) {
             const arrayBuf = await imgResp.arrayBuffer();
@@ -326,9 +379,21 @@ exports.handler = async (event) => {
     return { statusCode: 404, headers, body: "" };
   }
 
-  // 2c. Пассивно-агрессивные напоминания в стиле Совы Duolingo:
-  // /.netlify/functions/bot?action=owl_check (проверка неактивных) или ?action=owl_force (разослать всем сейчас)
+  // 2c. Пассивно-агрессивные напоминания в стиле Совы Duolingo
   if (qs.action === "owl_check" || qs.action === "owl_force") {
+    const isInternalCron = event._internalCronToken === INTERNAL_CRON_TOKEN;
+    if (qs.action === "owl_force" && !isAuthorizedAdminRequest(event)) {
+      return { statusCode: 403, headers, body: "Forbidden" };
+    }
+    if (qs.action === "owl_check" && !isInternalCron && !isAuthorizedAdminRequest(event)) {
+      // Внешние клиенты не могут форсировать рассылку; выполняется строго с учётом 6ч кулдауна
+      const out = await runOwlReminders(false);
+      return {
+        statusCode: 200,
+        headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+        body: JSON.stringify({ ok: out.ok })
+      };
+    }
     const out = await runOwlReminders(qs.action === "owl_force");
     return {
       statusCode: 200,
@@ -337,12 +402,31 @@ exports.handler = async (event) => {
     };
   }
 
-  // 2d. Мгновенное уведомление пригласившего о новом реферале и начислении наград
-  // /.netlify/functions/bot?action=ref_notify&inviter_id=12345&friend_name=Имя
+  // 2d. Мгновенное уведомление пригласившего о новом реферале (с валидацией ID и защитой от спама)
   if (qs.action === "ref_notify" && qs.inviter_id) {
     try {
-      const inviterId = String(qs.inviter_id);
-      const friendName = esc(qs.friend_name || "Твой друг");
+      const inviterId = String(qs.inviter_id).trim();
+      if (!/^\d{5,15}$/.test(inviterId)) {
+        return { statusCode: 400, headers, body: JSON.stringify({ ok: false }) };
+      }
+      // Проверяем существование игрока в БД и анти-спам кулдаун (не чаще 1 уведомления в 60 сек)
+      const pRes = await fetch(`${FIREBASE_DB}/players/${encodeURIComponent(inviterId)}.json`);
+      const pData = pRes.ok ? await pRes.json() : null;
+      const now = Date.now();
+      if (!pData || typeof pData !== "object" || (now - Number(pData.lastRefNotifyTs || 0) < 60000)) {
+        return {
+          statusCode: 200,
+          headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
+          body: JSON.stringify({ ok: false })
+        };
+      }
+      await fetch(`${FIREBASE_DB}/players/${encodeURIComponent(inviterId)}.json`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lastRefNotifyTs: now })
+      }).catch(() => {});
+
+      const friendName = esc(String(qs.friend_name || "Твой друг").slice(0, 40));
       const text =
         `🎉🍪 <b>У тебя новый друг в ОРЕО!</b>\n\n` +
         `Игрок <b>${friendName}</b> присоединился по твоей реферальной ссылке!\n\n` +
@@ -371,35 +455,55 @@ exports.handler = async (event) => {
       return {
         statusCode: 200,
         headers: { ...headers, "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify({ ok: false, error: e.message })
+        body: JSON.stringify({ ok: false })
       };
     }
   }
 
   // 3. Обработка входящего Webhook от Telegram
-  if (event.httpMethod !== "POST" || !event.body) {
+  if (event.httpMethod !== "POST") {
     return { statusCode: 200, headers, body: "Oreo Bot Webhook Active" };
+  }
+
+  const gotSecret = getHeader(event.headers, "x-telegram-bot-api-secret-token");
+  if (!WEBHOOK_SECRET || !timingSafeMatch(gotSecret, WEBHOOK_SECRET)) {
+    return { statusCode: 403, headers, body: "Forbidden" };
+  }
+
+  if (!event.body || event.body.length > MAX_BODY_CHARS) {
+    return { statusCode: event.body ? 413 : 400, headers, body: "Invalid payload" };
   }
 
   let update = {};
   try {
     update = JSON.parse(event.body);
   } catch (e) {
-    return { statusCode: 200, headers, body: "bad json" };
+    return { statusCode: 400, headers, body: "bad json" };
   }
 
-  // Подтверждение предзаказа Telegram Stars
+  // Валидация предзаказа Telegram Stars (проверка валюты XTR и тарифа пакета)
   if (update.pre_checkout_query) {
+    const pcq = update.pre_checkout_query;
+    const rawPayload = String(pcq.invoice_payload || "");
+    const payloadPrefix = rawPayload.split(":")[0];
+    const matchedPack = Object.values(STAR_PACKS).find((p) => p.payload === payloadPrefix);
+    const isValidOrder =
+      pcq.currency === "XTR" &&
+      Boolean(matchedPack) &&
+      Number(pcq.total_amount) === matchedPack.stars;
+
     await tgCall("answerPreCheckoutQuery", {
-      pre_checkout_query_id: update.pre_checkout_query.id,
-      ok: true
+      pre_checkout_query_id: pcq.id,
+      ok: isValidOrder,
+      ...(isValidOrder ? {} : { error_message: "Некорректные параметры счёта. Попробуйте создать заказ заново." })
     });
     return { statusCode: 200, headers, body: "ok" };
   }
 
   if (update.message) {
     const msg = update.message;
-    const chatId = msg.chat.id;
+    const chatId = msg.chat && msg.chat.id;
+    if (!chatId) return { statusCode: 200, headers, body: "ok" };
     const user = msg.from || {};
     const userId = user.id || "";
     const firstName = user.first_name || "Тапер";
@@ -433,12 +537,20 @@ exports.handler = async (event) => {
     } else if (cmd === "/tiktok") {
       await sendCard(chatId, buildTiktokText(refLink), backKeyboard(appUrl, refLink));
     } else if (cmd === "/owl") {
-      const out = await runOwlReminders(true);
-      await tgCall("sendMessage", {
-        chat_id: chatId,
-        text: `🦉 <b>Сова ОРЕО вылетела!</b> Отправлено напоминаний игрокам: <b>${out.sent}</b>`,
-        parse_mode: "HTML"
-      });
+      if (Number(userId) !== ADMIN_USER_ID) {
+        await tgCall("sendMessage", {
+          chat_id: chatId,
+          text: "⛔ <b>Доступ закрыт!</b> Команда рассылки доступна только основателю.",
+          parse_mode: "HTML"
+        });
+      } else {
+        const out = await runOwlReminders(true);
+        await tgCall("sendMessage", {
+          chat_id: chatId,
+          text: `🦉 <b>Сова ОРЕО вылетела!</b> Отправлено напоминаний игрокам: <b>${out.sent}</b>`,
+          parse_mode: "HTML"
+        });
+      }
     } else {
       await sendCard(chatId, buildHomeText(firstName, Boolean(refParam)), mainKeyboard(appUrl, refLink));
     }
@@ -498,3 +610,5 @@ exports.handler = async (event) => {
 
   return { statusCode: 200, headers, body: "ok" };
 };
+
+exports.INTERNAL_CRON_TOKEN = INTERNAL_CRON_TOKEN;

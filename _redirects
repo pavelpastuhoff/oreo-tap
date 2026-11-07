@@ -1,1 +1,12 @@
 /bot.py /404.html 404!
+/admin_poker_bot.py /404.html 404!
+/Dockerfile /404.html 404!
+/DEPLOY.md /404.html 404!
+/requirements.txt /404.html 404!
+/netlify.toml /404.html 404!
+/.env /404.html 404!
+/.env.* /404.html 404!
+/.gitignore /404.html 404!
+/.dockerignore /404.html 404!
+/__pycache__/* /404.html 404!
+/*.pyc /404.html 404!

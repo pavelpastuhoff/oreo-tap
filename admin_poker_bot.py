@@ -5,7 +5,9 @@
 from datetime import datetime, timezone
 import html
 import json
+import math
 import os
+import re
 import sys
 import threading
 import time
@@ -13,17 +15,50 @@ import urllib.parse
 import urllib.request
 import uuid
 
-MY_USER_ID = 594228143
-FIREBASE_DB_URL = os.environ.get(
-    "FIREBASE_DB_URL",
-    "https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app",
+MY_USER_ID = int(os.getenv("ADMIN_USER_ID") or "594228143")
+FIREBASE_DB_URL = (
+    os.getenv("FIREBASE_DB_URL")
+    or "https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app"
 ).rstrip("/")
 PAVEL_BANK_DEFAULT = 433763254656000000
+MAX_SAFE_AMOUNT = 1_000_000_000_000_000
 PLAYERS_PAGE_SIZE = 6
 
 # Состояния диалогов в памяти: {user_id_int: {"mode": str, ...}}
 _user_states = {}
 _duel_listener_started = False
+_duel_sync_lock = threading.Lock()
+_last_duel_sync_ts = 0.0
+_TOKEN_RE = re.compile(r"[0-9]{8,12}:[A-Za-z0-9_-]{30,50}")
+
+
+def _redact_err(val) -> str:
+    text = str(val or "")
+    raw_tok = os.getenv("BOT_TOKEN")
+    tok = raw_tok.strip() if raw_tok else ""
+    if tok:
+        text = text.replace(tok, "[REDACTED_BOT_TOKEN]")
+    return _TOKEN_RE.sub("[REDACTED_BOT_TOKEN]", text)
+
+
+def _fb_key(val) -> str:
+    s = str(val or "").strip()
+    if not s or s in (".", "..") or any(ch in s for ch in ("/", "\\", "$", "#", "[", "]", "\x00")):
+        raise ValueError("Invalid Firebase key")
+    return urllib.parse.quote(s, safe="")
+
+
+def _parse_safe_int(raw, min_val=None, max_val=MAX_SAFE_AMOUNT) -> int:
+    cleaned = str(raw or "").strip().replace(" ", "").replace("_", "").replace(",", "")
+    fval = float(cleaned)
+    if not math.isfinite(fval):
+        raise ValueError("Non-finite number")
+    ival = int(round(fval))
+    if min_val is not None and ival < min_val:
+        ival = min_val
+    if max_val is not None and ival > max_val:
+        ival = max_val
+    return ival
 
 RESOURCE_META = {
     "coins": {"label": "🪙 Коины", "field": "coins", "unit": "🪙"},
@@ -87,9 +122,12 @@ def is_admin(user_id) -> bool:
 
 def fmt_num(val) -> str:
     try:
-        n = int(round(float(val)))
+        f = float(val)
+        if not math.isfinite(f):
+            return "0"
+        n = int(round(f))
         return f"{n:,}".replace(",", " ")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return "0"
 
 
@@ -105,7 +143,7 @@ def fb_request(path: str, method: str = "GET", data=None):
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else None
     except Exception as e:
-        print(f"[Firebase {method} {path}] Ошибка:", e)
+        print(f"[Firebase {method} {path}] Ошибка:", _redact_err(e))
         return None
 
 
@@ -147,7 +185,11 @@ def get_all_players() -> list:
 
 def get_player(uid: str) -> dict:
     uid = str(uid)
-    data = fb_get(f"players/{urllib.parse.quote(uid)}")
+    try:
+        safe_uid = _fb_key(uid)
+        data = fb_get(f"players/{safe_uid}")
+    except ValueError:
+        data = None
     if not isinstance(data, dict):
         data = {"id": uid, "name": f"Игрок {uid}", "coins": 0, "gems": 5, "energy": 500, "sticks": 0}
     return {
@@ -166,9 +208,13 @@ def register_bot_user(user: dict):
     if not user or not user.get("id"):
         return
     uid = str(user["id"])
-    first_name = str(user.get("first_name") or "Тапер")
-    username = str(user.get("username") or "")
-    existing = fb_get(f"players/{urllib.parse.quote(uid)}")
+    try:
+        safe_uid = _fb_key(uid)
+    except ValueError:
+        return
+    first_name = str(user.get("first_name") or "Тапер")[:64]
+    username = str(user.get("username") or "")[:64]
+    existing = fb_get(f"players/{safe_uid}")
     patch = {
         "id": uid,
         "name": first_name,
@@ -177,7 +223,7 @@ def register_bot_user(user: dict):
     }
     if not isinstance(existing, dict):
         patch.update({"coins": 0, "gems": 5, "energy": 500, "sticks": 0, "ts": int(time.time() * 1000)})
-    fb_patch(f"players/{urllib.parse.quote(uid)}", patch)
+    fb_patch(f"players/{safe_uid}", patch)
 
 
 def get_common_bank() -> int:
@@ -222,9 +268,10 @@ def apply_resource_change(target_uid: str, res_key: str, mode: str, amount: int 
         if mode == "reset":
             patch_data["adminResetId"] = int(p.get("adminResetId", 0)) + 1
 
-    fb_patch(f"players/{urllib.parse.quote(str(target_uid))}", patch_data)
+    safe_uid = _fb_key(target_uid)
+    fb_patch(f"players/{safe_uid}", patch_data)
     fb_put(
-        f"admin_grants/{urllib.parse.quote(str(target_uid))}/{now_ms}",
+        f"admin_grants/{safe_uid}/{now_ms}",
         {
             "resource": res_key,
             "mode": mode,
@@ -272,7 +319,10 @@ def admin_home_kb(webapp_url: str) -> dict:
 
 
 def _resolve_bot_token() -> str:
-    return (os.getenv("BOT_TOKEN") or "").strip()
+    raw_token = os.getenv("BOT_TOKEN")
+    if not raw_token or not raw_token.strip():
+        raise RuntimeError("BOT_TOKEN не задан в переменных окружения!")
+    return raw_token.strip()
 
 
 def send_text_document(chat_id: int, filename: str, content_text: str, caption: str = "", reply_markup=None):
@@ -305,8 +355,12 @@ def send_text_document(chat_id: int, filename: str, content_text: str, caption: 
         data=bytes(body),
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
-    with urllib.request.urlopen(req, timeout=45) as resp:
-        return json.load(resp)
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            return json.load(resp)
+    except Exception as e:
+        print("[SendDocument] Ошибка отправки файла:", _redact_err(e))
+        return None
 
 
 def _crash_matches_date(item: dict, date_filter: str) -> bool:
@@ -501,13 +555,17 @@ def grant_exclusive_skin(target_uid: str, skin_id: str, call_fn, webapp_url: str
     if not meta:
         return False, "Неизвестный скин"
     uid = str(target_uid)
+    try:
+        safe_uid = _fb_key(uid)
+    except ValueError:
+        return False, "Некорректный ID игрока"
     now_ms = int(time.time() * 1000)
 
     # Сохраняем в players/{userId}/unlocked_skins и в единую ветку user_skins/{userId}
-    fb_patch(f"players/{urllib.parse.quote(uid)}/unlocked_skins", {skin_id: True})
-    fb_patch(f"user_skins/{urllib.parse.quote(uid)}", {skin_id: True, "updatedAt": now_ms})
+    fb_patch(f"players/{safe_uid}/unlocked_skins", {skin_id: True})
+    fb_patch(f"user_skins/{safe_uid}", {skin_id: True, "updatedAt": now_ms})
     fb_put(
-        f"admin_grants/{urllib.parse.quote(uid)}/{now_ms}",
+        f"admin_grants/{safe_uid}/{now_ms}",
         {
             "resource": "skin",
             "skinId": skin_id,
@@ -523,14 +581,14 @@ def grant_exclusive_skin(target_uid: str, skin_id: str, call_fn, webapp_url: str
     if uid.isdigit():
         kb = {
             "inline_keyboard": [
-                [{"text": "✨ Примерить скин в ОРЕО67!", "web_app": {"url": f"{webapp_url}?equip_skin={urllib.parse.quote(skin_id)}"}}],
+                [{"text": "✨ Примерить скин в ОРЕО67!", "web_app": {"url": f"{webapp_url}?equip_skin={urllib.parse.quote(skin_id, safe='')}"}}],
             ]
         }
         try:
             call_fn("sendMessage", chat_id=int(uid), text=meta["dm_text"], parse_mode="HTML", reply_markup=kb)
             delivered = True
         except Exception as e:
-            print(f"[Skin Notify {uid}] Ошибка ЛС:", e)
+            print(f"[Skin Notify {uid}] Ошибка ЛС:", _redact_err(e))
     return True, delivered
 
 
@@ -557,7 +615,10 @@ def build_skins_admin_home() -> tuple:
 
 def build_player_skin_menu(target_uid: str) -> tuple:
     p = get_player(target_uid)
-    unlocked = fb_get(f"players/{urllib.parse.quote(str(target_uid))}/unlocked_skins") or {}
+    try:
+        unlocked = fb_get(f"players/{_fb_key(target_uid)}/unlocked_skins") or {}
+    except ValueError:
+        unlocked = {}
     if not isinstance(unlocked, dict):
         unlocked = {}
     owned_labels = [EXCLUSIVE_SKINS[k]["title"] for k in EXCLUSIVE_SKINS if unlocked.get(k)]
@@ -894,6 +955,7 @@ def send_duel_notification_to_opponent(challenge_id: str, ch: dict, call_fn, web
         ]
     }
     try:
+        safe_cid = _fb_key(challenge_id)
         call_fn(
             "sendMessage",
             chat_id=int(opponent_id),
@@ -902,12 +964,12 @@ def send_duel_notification_to_opponent(challenge_id: str, ch: dict, call_fn, web
             reply_markup=kb,
         )
         fb_patch(
-            f"duel_challenges/{urllib.parse.quote(challenge_id)}",
+            f"duel_challenges/{safe_cid}",
             {"notified": True, "notifiedAt": int(time.time() * 1000)},
         )
         return True
     except Exception as e:
-        print(f"[Duel Notify {challenge_id}] Ошибка отправки в ЛС:", e)
+        print(f"[Duel Notify {challenge_id}] Ошибка отправки в ЛС:", _redact_err(e))
         return False
 
 
@@ -920,9 +982,14 @@ def create_duel_challenge(
     webapp_url: str,
 ) -> tuple:
     challenger_id = str(challenger_user.get("id") or "")
+    try:
+        safe_challenger_id = _fb_key(challenger_id)
+        _fb_key(opponent_id)
+    except ValueError:
+        return False, "⚠️ Некорректный идентификатор игрока.", None
     challenger = get_player(challenger_id)
     opponent = get_player(opponent_id)
-    bet = max(100, int(bet))
+    bet = max(100, min(MAX_SAFE_AMOUNT, int(bet)))
 
     if challenger["coins"] < bet:
         return False, f"❌ Недостаточно коинов! Ваш баланс: <b>{fmt_num(challenger['coins'])} 🪙</b>, нужно: <b>{fmt_num(bet)} 🪙</b>.", None
@@ -931,7 +998,7 @@ def create_duel_challenge(
     new_coins = challenger["coins"] - bet
     now_ms = int(time.time() * 1000)
     fb_patch(
-        f"players/{urllib.parse.quote(challenger_id)}",
+        f"players/{safe_challenger_id}",
         {"coins": new_coins, "taps": new_coins, "count": new_coins, "ts": now_ms},
     )
 
@@ -958,7 +1025,11 @@ def create_duel_challenge(
 
 
 def decline_or_cancel_duel(challenge_id: str, actor_id: str, call_fn, is_cancel: bool = False) -> tuple:
-    ch = fb_get(f"duel_challenges/{urllib.parse.quote(challenge_id)}")
+    try:
+        safe_cid = _fb_key(challenge_id)
+    except ValueError:
+        return False, "⚠️ Некорректный идентификатор вызова."
+    ch = fb_get(f"duel_challenges/{safe_cid}")
     if not isinstance(ch, dict):
         return False, "⚠️ Вызов не найден или уже завершён."
 
@@ -979,14 +1050,15 @@ def decline_or_cancel_duel(challenge_id: str, actor_id: str, call_fn, is_cancel:
 
     # Возвращаем замороженную ставку Игроку А
     if ch.get("escrowFrozen", True) and bet > 0 and challenger_id:
+        safe_ch_uid = _fb_key(challenger_id)
         challenger = get_player(challenger_id)
         restored = challenger["coins"] + bet
         fb_patch(
-            f"players/{urllib.parse.quote(challenger_id)}",
+            f"players/{safe_ch_uid}",
             {"coins": restored, "taps": restored, "count": restored, "ts": now_ms},
         )
         fb_put(
-            f"admin_grants/{urllib.parse.quote(challenger_id)}/{now_ms}",
+            f"admin_grants/{safe_ch_uid}/{now_ms}",
             {
                 "resource": "coins",
                 "mode": "add",
@@ -999,7 +1071,7 @@ def decline_or_cancel_duel(challenge_id: str, actor_id: str, call_fn, is_cancel:
         )
 
     fb_patch(
-        f"duel_challenges/{urllib.parse.quote(challenge_id)}",
+        f"duel_challenges/{safe_cid}",
         {
             "status": new_status,
             "escrowFrozen": False,
@@ -1029,40 +1101,55 @@ def decline_or_cancel_duel(challenge_id: str, actor_id: str, call_fn, is_cancel:
     )
 
 
-def process_duel_challenges_once(call_fn, webapp_url: str):
-    """Проверяет ветки duel_challenges и skin_notifications в Firebase и рассылает ЛС уведомления."""
-    raw = fb_get("duel_challenges")
-    if isinstance(raw, dict):
-        for cid, ch in raw.items():
-            if not isinstance(ch, dict):
-                continue
-            if str(ch.get("status") or "pending") == "pending" and not ch.get("notified"):
-                send_duel_notification_to_opponent(str(cid), ch, call_fn, webapp_url)
+def process_duel_challenges_once(call_fn, webapp_url: str, min_interval_sec: float = 0.0):
+    """Проверяет ветки duel_challenges и skin_notifications в Firebase с защитой от гонок и флуда."""
+    global _last_duel_sync_ts
+    if not _duel_sync_lock.acquire(blocking=False):
+        return
+    try:
+        now_s = time.monotonic()
+        if min_interval_sec > 0 and (now_s - _last_duel_sync_ts) < min_interval_sec:
+            return
+        _last_duel_sync_ts = now_s
 
-    sraw = fb_get("skin_notifications")
-    if isinstance(sraw, dict):
-        for nid, item in sraw.items():
-            if not isinstance(item, dict) or item.get("sent"):
-                continue
-            uid = str(item.get("userId") or "")
-            sk_id = str(item.get("skinId") or "")
-            meta = EXCLUSIVE_SKINS.get(sk_id)
-            if uid.isdigit() and meta:
+        raw = fb_get("duel_challenges")
+        if isinstance(raw, dict):
+            for cid, ch in raw.items():
+                if not isinstance(ch, dict):
+                    continue
+                if str(ch.get("status") or "pending") == "pending" and not ch.get("notified"):
+                    send_duel_notification_to_opponent(str(cid), ch, call_fn, webapp_url)
+
+        sraw = fb_get("skin_notifications")
+        if isinstance(sraw, dict):
+            for nid, item in sraw.items():
+                if not isinstance(item, dict) or item.get("sent"):
+                    continue
+                uid = str(item.get("userId") or "")
+                sk_id = str(item.get("skinId") or "")
+                meta = EXCLUSIVE_SKINS.get(sk_id)
                 try:
-                    call_fn(
-                        "sendMessage",
-                        chat_id=int(uid),
-                        text=meta["dm_text"],
-                        parse_mode="HTML",
-                        reply_markup={
-                            "inline_keyboard": [
-                                [{"text": "✨ Примерить скин в ОРЕО67!", "web_app": {"url": f"{webapp_url}?equip_skin={urllib.parse.quote(sk_id)}"}}]
-                            ]
-                        },
-                    )
-                except Exception:
-                    pass
-            fb_patch(f"skin_notifications/{urllib.parse.quote(str(nid))}", {"sent": True, "sentAt": int(time.time() * 1000)})
+                    safe_nid = _fb_key(nid)
+                except ValueError:
+                    continue
+                if uid.isdigit() and meta:
+                    try:
+                        call_fn(
+                            "sendMessage",
+                            chat_id=int(uid),
+                            text=meta["dm_text"],
+                            parse_mode="HTML",
+                            reply_markup={
+                                "inline_keyboard": [
+                                    [{"text": "✨ Примерить скин в ОРЕО67!", "web_app": {"url": f"{webapp_url}?equip_skin={urllib.parse.quote(sk_id, safe='')}"}}]
+                                ]
+                            },
+                        )
+                    except Exception:
+                        pass
+                fb_patch(f"skin_notifications/{safe_nid}", {"sent": True, "sentAt": int(time.time() * 1000)})
+    finally:
+        _duel_sync_lock.release()
 
 
 def start_duel_listener(call_fn, webapp_url: str, interval_sec: float = 4.0):
@@ -1077,7 +1164,7 @@ def start_duel_listener(call_fn, webapp_url: str, interval_sec: float = 4.0):
             try:
                 process_duel_challenges_once(call_fn, webapp_url)
             except Exception as e:
-                print("[DuelListener] Ошибка цикла:", e)
+                print("[DuelListener] Ошибка цикла:", _redact_err(e))
             time.sleep(interval_sec)
 
     t = threading.Thread(target=_worker, name="OreoDuelChallengeListener", daemon=True)
@@ -1088,13 +1175,18 @@ def start_duel_listener(call_fn, webapp_url: str, interval_sec: float = 4.0):
 
 def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: str) -> bool:
     """Возвращает True, если сообщение обработано модулем админки или дуэлей."""
-    chat_id = msg["chat"]["id"]
+    if not isinstance(msg, dict):
+        return False
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not chat_id:
+        return False
     user = msg.get("from") or {}
     user_id = user.get("id", "")
     text_in = (msg.get("text") or "").strip()
 
     register_bot_user(user)
-    process_duel_challenges_once(call_fn, webapp_url)
+    if not _duel_listener_started:
+        process_duel_challenges_once(call_fn, webapp_url, min_interval_sec=4.0)
 
     cmd = text_in.split()[0].lower().split("@")[0] if text_in else ""
 
@@ -1122,7 +1214,7 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
             )
             return True
         parts = text_in.split(maxsplit=1)
-        arg_date = parts[1].strip() if len(parts) > 1 else datetime.now().strftime("%Y-%m-%d")
+        arg_date = parts[1].strip()[:32] if len(parts) > 1 else datetime.now().strftime("%Y-%m-%d")
         filename, report_txt, cnt, users_cnt, total_db = build_crash_report_txt(arg_date)
         caption = (
             f"🧯 <b>ОТЧЁТ TELEMETRY & CRASH LOGS</b>\n"
@@ -1130,7 +1222,8 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
             f"⚠️ <b>Ошибок за период:</b> <b>{cnt}</b> (всего в БД: {total_db})\n"
             f"👥 <b>Затронуто игроков:</b> <b>{users_cnt}</b>"
         )
-        send_text_document(chat_id, filename, report_txt, caption=caption)
+        # Отправляем служебный дамп строго в личный чат основателя (защита от утечки в групповых чатах)
+        send_text_document(MY_USER_ID, filename, report_txt, caption=caption)
         return True
 
     if cmd == "/duel" or text_in in ("⚔️ Вызов 1v1", "⚔️ Дуэль"):
@@ -1170,9 +1263,9 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
         raw_num = text_in.replace(" ", "").replace("_", "").replace(",", "")
         act_mode = "add" if raw_num.startswith(("+", "-")) else "set"
         try:
-            amount = int(float(raw_num))
-        except ValueError:
-            call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите целое число (например: <code>+50000</code> или <code>250000</code>).", parse_mode="HTML")
+            amount = _parse_safe_int(raw_num, min_val=-MAX_SAFE_AMOUNT, max_val=MAX_SAFE_AMOUNT)
+        except (ValueError, OverflowError):
+            call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите конечное целое число (например: <code>+50000</code> или <code>250000</code>).", parse_mode="HTML")
             return True
 
         _user_states.pop(user_id, None)
@@ -1190,10 +1283,9 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
         return True
 
     if mode == "adm_bank_manual" and is_admin(user_id):
-        raw_num = text_in.replace(" ", "").replace("_", "").replace(",", "")
         try:
-            val = int(float(raw_num))
-        except ValueError:
+            val = _parse_safe_int(text_in, min_val=0, max_val=PAVEL_BANK_DEFAULT * 10)
+        except (ValueError, OverflowError):
             call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите корректное число для Общего банка.", parse_mode="HTML")
             return True
         _user_states.pop(user_id, None)
@@ -1210,8 +1302,8 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
             draft["start_time"] = text_in[:60]
         elif mode == "adm_tour_pool":
             try:
-                draft["prize_pool"] = max(0, int(float(text_in.replace(" ", "").replace(",", ""))))
-            except ValueError:
+                draft["prize_pool"] = _parse_safe_int(text_in, min_val=0, max_val=PAVEL_BANK_DEFAULT * 10)
+            except (ValueError, OverflowError):
                 call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите сумму призового фонда числом.", parse_mode="HTML")
                 return True
         _user_states[user_id] = {"mode": "adm_tour_draft", "draft": draft}
@@ -1222,10 +1314,9 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
     if mode == "duel_bet_manual":
         opp_id = st["opponent_id"]
         game = st["game"]
-        raw_num = text_in.replace(" ", "").replace("_", "").replace(",", "")
         try:
-            bet = max(100, int(float(raw_num)))
-        except ValueError:
+            bet = _parse_safe_int(text_in, min_val=100, max_val=MAX_SAFE_AMOUNT)
+        except (ValueError, OverflowError):
             call_fn("sendMessage", chat_id=chat_id, text="⚠️ Введите ставку числом (минимум 100 коинов).", parse_mode="HTML")
             return True
         _user_states.pop(user_id, None)
@@ -1254,6 +1345,8 @@ def notify_player_resource(target_uid: str, res_key: str, delta: int, new_val: i
 
 def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: str) -> bool:
     """Возвращает True, если callback_query обработан модулем админки или дуэлей."""
+    if not isinstance(cb, dict):
+        return False
     data = cb.get("data") or ""
     msg = cb.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
@@ -1263,7 +1356,8 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
     user_id = user.get("id", "")
 
     register_bot_user(user)
-    process_duel_challenges_once(call_fn, webapp_url)
+    if not _duel_listener_started:
+        process_duel_challenges_once(call_fn, webapp_url, min_interval_sec=4.0)
 
     if data == "noop":
         return True
@@ -1521,19 +1615,22 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
             return True
 
         if data.startswith("adm_crashes_dl:"):
-            target_d = data.split(":", 1)[1] or datetime.now().strftime("%Y-%m-%d")
+            target_d = (data.split(":", 1)[1] or datetime.now().strftime("%Y-%m-%d"))[:32]
             filename, report_txt, cnt, users_cnt, total_db = build_crash_report_txt(target_d)
             caption = (
                 f"🧯 <b>Файл телеметрии:</b> <code>{html.escape(filename)}</code>\n"
                 f"⚠️ <b>Событий:</b> <b>{cnt}</b> • 👥 <b>Игроков:</b> <b>{users_cnt}</b> (в БД: {total_db})"
             )
-            send_text_document(chat_id, filename, report_txt, caption=caption)
+            send_text_document(MY_USER_ID, filename, report_txt, caption=caption)
             return True
 
     # --------- СИСТЕМА ВЫЗОВОВ 1v1 (ДЛЯ ВСЕХ ИГРОКОВ) ---------
     if data == "duel_menu" or data.startswith("duel_page:"):
         _user_states.pop(user_id, None)
-        page = int(data.split(":")[1]) if ":" in data else 0
+        try:
+            page = int(data.split(":", 1)[1]) if ":" in data else 0
+        except (ValueError, IndexError):
+            page = 0
         text, kb = build_players_page(page, "duel", exclude_uid=str(user_id))
         edit_card_fn(chat_id, message_id, has_photo, text, kb)
         return True
@@ -1556,13 +1653,23 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
         return True
 
     if data.startswith("duel_cfg:"):
-        _, opp_id, game, bet_str = data.split(":", 3)
-        text, kb = build_duel_setup_menu(str(user_id), opp_id, game, int(bet_str))
+        parts = data.split(":", 3)
+        if len(parts) != 4:
+            return True
+        _, opp_id, game, bet_str = parts
+        try:
+            bet_val = _parse_safe_int(bet_str, min_val=100, max_val=MAX_SAFE_AMOUNT)
+        except (ValueError, OverflowError):
+            bet_val = 10000
+        text, kb = build_duel_setup_menu(str(user_id), opp_id, game, bet_val)
         edit_card_fn(chat_id, message_id, has_photo, text, kb)
         return True
 
     if data.startswith("duel_bet_manual:"):
-        _, opp_id, game = data.split(":", 2)
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            return True
+        _, opp_id, game = parts
         _user_states[user_id] = {"mode": "duel_bet_manual", "opponent_id": opp_id, "game": game}
         edit_card_fn(
             chat_id,
@@ -1574,10 +1681,17 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
         return True
 
     if data.startswith("duel_send:"):
-        _, opp_id, game, bet_str = data.split(":", 3)
-        ok, err_msg, ch_data = create_duel_challenge(user, opp_id, game, int(bet_str), call_fn, webapp_url)
+        parts = data.split(":", 3)
+        if len(parts) != 4:
+            return True
+        _, opp_id, game, bet_str = parts
+        try:
+            bet_val = _parse_safe_int(bet_str, min_val=100, max_val=MAX_SAFE_AMOUNT)
+        except (ValueError, OverflowError):
+            bet_val = 10000
+        ok, err_msg, ch_data = create_duel_challenge(user, opp_id, game, bet_val, call_fn, webapp_url)
         if not ok:
-            text, kb = build_duel_setup_menu(str(user_id), opp_id, game, int(bet_str))
+            text, kb = build_duel_setup_menu(str(user_id), opp_id, game, bet_val)
             edit_card_fn(chat_id, message_id, has_photo, f"{err_msg}\n\n{text}", kb)
             return True
 

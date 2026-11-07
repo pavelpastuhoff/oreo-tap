@@ -43,10 +43,11 @@
     return { id, name, username, photo };
   }
   function isAdminUser() {
-    const me = getMe();
+    const tgApp = window.Telegram && window.Telegram.WebApp;
+    const tgU = tgApp && tgApp.initData && tgApp.initDataUnsafe && tgApp.initDataUnsafe.user;
+    if (tgU && String(tgU.id) === MY_ADMIN_ID) return true;
     const host = String(location.hostname || '');
-    const isLocal = host === 'localhost' || host === '127.0.0.1' || location.protocol === 'file:' || location.search.includes('admin=1');
-    return me.id === MY_ADMIN_ID || isLocal;
+    return host === 'localhost' || host === '127.0.0.1';
   }
 
   function getLocalState() {
@@ -5536,10 +5537,6 @@
       admBtn.onclick = () => openZone('admin');
     }
 
-    syncAdminGrantsForMe();
-    syncUnlockedSkinsFromFirebase();
-    setInterval(syncAdminGrantsForMe, 4500);
-
     const params = new URLSearchParams(location.search);
     const duelId = params.get('duel');
     const gameParam = params.get('game');
@@ -5547,9 +5544,13 @@
     const tourParam = params.get('tournament') || params.get('table');
     const equipSkinParam = params.get('equip_skin');
 
-    if (equipSkinParam && SKINS[equipSkinParam]) {
-      unlockSkinLocally(equipSkinParam, true);
-    }
+    syncAdminGrantsForMe();
+    syncUnlockedSkinsFromFirebase().then(() => {
+      if (equipSkinParam && SKINS[equipSkinParam] && getUnlockedSkinsMap()[equipSkinParam]) {
+        equipExclusiveSkin(equipSkinParam);
+      }
+    }).catch(() => {});
+    setInterval(syncAdminGrantsForMe, 4500);
 
     if (duelId) {
       openZone('duels');

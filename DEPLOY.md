@@ -48,9 +48,10 @@ gcloud run deploy oreo-bot --source . --region europe-west4 --allow-unauthentica
 
 | Переменная | Обязательна | Описание |
 | :--- | :---: | :--- |
-| `BOT_TOKEN` | Да | Токен Telegram-бота от `@BotFather` |
-| `PORT` | Нет (задаётся Cloud Run) | Порт веб-сервера (по умолчанию `8080`, слушает `0.0.0.0`) |
-| `WEBHOOK_URL` | Нет | Публичный HTTPS-адрес сервиса Cloud Run для автоматической установки `setWebhook` |
+| `BOT_TOKEN` | Да | Токен Telegram-бота от `@BotFather` (строго через env) |
+| `WEBHOOK_SECRET` | Да (для Webhook) | Криптографический секрет для проверки заголовка `X-Telegram-Bot-Api-Secret-Token` |
+| `PORT` | Нет (задаётся Render / Cloud Run) | Порт веб-сервера (по умолчанию `8080`, слушает `0.0.0.0`) |
+| `WEBHOOK_URL` | Нет (на Render берётся `RENDER_EXTERNAL_URL`) | Публичный HTTPS-адрес сервиса для автоматической установки `setWebhook` |
 | `WEBAPP_URL` | Нет | URL Telegram Mini App (по умолчанию `https://oreo-67-bot.netlify.app`) |
 | `BOT_USERNAME` | Нет | Имя бота без `@` (по умолчанию `oreo_67_bot`) |
 | `FIREBASE_DB_URL` | Нет | URL базы данных Firebase Realtime Database |

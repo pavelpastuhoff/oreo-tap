@@ -4,7 +4,16 @@
 .env
 .env.*
 *.env
+.envrc
 !.env.example
+
+# --- Бэкапы и дампы ---
+*.bak
+*.old
+*.orig
+*.swp
+*.dump
+*.sql
 
 # --- Приватные ключи и конфиги Firebase / Google Cloud ---
 *firebase*

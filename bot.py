@@ -6,11 +6,13 @@
 При старте автоматически настраивает описание, команды и кнопку меню бота,
 а также отправляет фирменный баннер assets/banner.jpg с HTML-оформлением.
 """
+import hmac
 import html
 import http.server
 import json
 import mimetypes
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -45,17 +47,40 @@ def _load_local_dotenv(dotenv_path=None):
 
 _load_local_dotenv()
 
-TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "oreo_67_bot")
-WEBAPP_URL = os.environ.get("WEBAPP_URL", "https://oreo-67-bot.netlify.app")
+_raw_bot_token = os.getenv("BOT_TOKEN")
+TOKEN = _raw_bot_token.strip() if _raw_bot_token else None
+
+_raw_webhook_secret = os.getenv("WEBHOOK_SECRET")
+WEBHOOK_SECRET = _raw_webhook_secret.strip() if _raw_webhook_secret else None
+
+BOT_USERNAME = os.getenv("BOT_USERNAME") or "oreo_67_bot"
+WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://oreo-67-bot.netlify.app"
 WEBHOOK_URL = (
-    os.environ.get("WEBHOOK_URL")
-    or os.environ.get("CLOUD_RUN_URL")
-    or os.environ.get("SERVICE_URL")
+    os.getenv("WEBHOOK_URL")
+    or os.getenv("RENDER_EXTERNAL_URL")
+    or os.getenv("CLOUD_RUN_URL")
+    or os.getenv("SERVICE_URL")
     or ""
 ).strip()
-WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "/webhook").strip() or "/webhook"
-API = f"https://api.telegram.org/bot{TOKEN}/"
+WEBHOOK_PATH = (os.getenv("WEBHOOK_PATH") or "/webhook").strip() or "/webhook"
+if not WEBHOOK_PATH.startswith("/"):
+    WEBHOOK_PATH = f"/{WEBHOOK_PATH}"
+
+MAX_WEBHOOK_BODY_BYTES = 262_144  # 256 KB
+_WEBHOOK_SEMAPHORE = threading.BoundedSemaphore(32)
+_TOKEN_RE = re.compile(r"[0-9]{8,12}:[A-Za-z0-9_-]{30,50}")
+
+
+def _redact_secrets(val) -> str:
+    text = str(val or "")
+    if TOKEN:
+        text = text.replace(TOKEN, "[REDACTED_BOT_TOKEN]")
+    if WEBHOOK_SECRET:
+        text = text.replace(WEBHOOK_SECRET, "[REDACTED_WEBHOOK_SECRET]")
+    return _TOKEN_RE.sub("[REDACTED_BOT_TOKEN]", text)
+
+
+API = f"https://api.telegram.org/bot{TOKEN}/" if TOKEN else ""
 BANNER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "banner.jpg")
 
 # Кешируем file_id баннера после первой загрузки, чтобы бот отвечал мгновенно
@@ -133,7 +158,7 @@ def send_card(chat_id, caption, reply_markup):
                 _cached_banner_file_id = photos[-1].get("file_id")
             return res
     except Exception as e:
-        print("Не удалось отправить баннер, откат на текст:", e)
+        print("Не удалось отправить баннер, откат на текст:", _redact_secrets(e))
 
     return call(
         "sendMessage",
@@ -309,13 +334,17 @@ def setup_bot_profile():
             ),
         )
     except Exception as e:
-        print("Предупреждение при настройке профиля бота:", e)
+        print("Предупреждение при настройке профиля бота:", _redact_secrets(e))
 
 
 def handle_message(msg):
+    if not isinstance(msg, dict):
+        return
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not chat_id:
+        return
     if admin_poker_bot.handle_admin_or_duel_message(msg, call, send_card, WEBAPP_URL):
         return
-    chat_id = msg["chat"]["id"]
     user = msg.get("from") or {}
     user_id = user.get("id", "")
     first_name = user.get("first_name", "Тапер")
@@ -346,6 +375,8 @@ def handle_message(msg):
 
 
 def handle_callback(cb):
+    if not isinstance(cb, dict) or not cb.get("id"):
+        return
     if admin_poker_bot.handle_admin_or_duel_callback(cb, call, edit_card, WEBAPP_URL):
         try:
             call("answerCallbackQuery", callback_query_id=cb["id"])
@@ -395,11 +426,11 @@ def process_update(u):
         elif "callback_query" in u:
             handle_callback(u["callback_query"])
     except Exception as e:
-        print("Ошибка при обработке обновления Telegram:", e)
+        print("Ошибка при обработке обновления Telegram:", _redact_secrets(e))
 
 
 def resolve_webhook_url():
-    """Формирует итоговый URL вебхука из переменных окружения Cloud Run (WEBHOOK_URL / SERVICE_URL)."""
+    """Формирует итоговый URL вебхука из переменных окружения Render / Cloud Run (WEBHOOK_URL / RENDER_EXTERNAL_URL / SERVICE_URL)."""
     raw = WEBHOOK_URL.strip()
     if not raw:
         return ""
@@ -410,87 +441,185 @@ def resolve_webhook_url():
     return raw
 
 
+def _expected_webhook_path() -> str:
+    resolved = resolve_webhook_url()
+    if resolved:
+        p = urllib.parse.urlsplit(resolved).path
+        if p:
+            return p
+    return WEBHOOK_PATH
+
+
 class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
-    def _respond_ok(self, send_body=True):
-        body = b"OK"
-        self.send_response(200)
+    timeout = 10
+
+    def _respond(self, code: int, body: bytes, send_body: bool = True):
+        self.send_response(code)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if send_body:
             self.wfile.write(body)
 
+    def _respond_ok(self, send_body=True):
+        self._respond(200, b"OK", send_body=send_body)
+
     def do_GET(self):
-        self._respond_ok(True)
+        req_path = self.path.split("?", 1)[0]
+        if req_path in ("/", "/health", "/healthz"):
+            self._respond_ok(True)
+        else:
+            self._respond(404, b"Not Found", True)
 
     def do_HEAD(self):
-        self._respond_ok(False)
+        req_path = self.path.split("?", 1)[0]
+        if req_path in ("/", "/health", "/healthz"):
+            self._respond_ok(False)
+        else:
+            self._respond(404, b"Not Found", False)
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        raw_body = self.rfile.read(length) if length > 0 else b""
-        if raw_body:
+        req_path = self.path.split("?", 1)[0]
+        if req_path != _expected_webhook_path():
+            self.close_connection = True
+            self._respond(404, b"Not Found", True)
+            return
+
+        # 1. Криптографическая проверка секрета Telegram Webhook до чтения тела запроса
+        if not WEBHOOK_SECRET:
+            self.close_connection = True
+            self._respond(503, b"Webhook secret not configured", True)
+            return
+        got_secret = (self.headers.get("X-Telegram-Bot-Api-Secret-Token") or "").strip()
+        if not got_secret or not hmac.compare_digest(got_secret.encode("utf-8"), WEBHOOK_SECRET.encode("utf-8")):
+            self.close_connection = True
+            self._respond(403, b"Forbidden", True)
+            return
+
+        # 2. Защита от OOM и некорректного Content-Length / Content-Type
+        ctype = (self.headers.get("Content-Type") or "").lower()
+        if "application/json" not in ctype:
+            self.close_connection = True
+            self._respond(415, b"Unsupported Media Type", True)
+            return
+
+        raw_len = self.headers.get("Content-Length")
+        if raw_len is None:
+            self.close_connection = True
+            self._respond(411, b"Length Required", True)
+            return
+        try:
+            length = int(raw_len)
+        except ValueError:
+            self.close_connection = True
+            self._respond(400, b"Bad Request", True)
+            return
+
+        if length <= 0 or length > MAX_WEBHOOK_BODY_BYTES:
+            self.close_connection = True
+            self._respond(413 if length > MAX_WEBHOOK_BODY_BYTES else 400, b"Payload Invalid", True)
+            return
+
+        # 3. Ограничение параллельных воркеров от исчерпания потоков
+        if not _WEBHOOK_SEMAPHORE.acquire(blocking=False):
+            self._respond(429, b"Too Many Requests", True)
+            return
+
+        try:
+            raw_body = self.rfile.read(length)
             try:
                 update = json.loads(raw_body.decode("utf-8"))
-                process_update(update)
-            except Exception as e:
-                print("[Webhook] Ошибка разбора входящего POST-запроса:", e)
-        self._respond_ok(True)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._respond(400, b"Bad JSON", True)
+                return
+            process_update(update)
+            self._respond_ok(True)
+        except Exception as e:
+            print("[Webhook] Ошибка обработки входящего POST-запроса:", _redact_secrets(e))
+            try:
+                self._respond(500, b"Internal Error", True)
+            except Exception:
+                pass
+        finally:
+            _WEBHOOK_SEMAPHORE.release()
 
     def log_message(self, format, *args):
         return
 
 
 def start_healthcheck_server():
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.getenv("PORT") or 8080)
     server = http.server.ThreadingHTTPServer(("0.0.0.0", port), _HealthCheckHandler)
+    server.daemon_threads = True
     t = threading.Thread(target=server.serve_forever, name="CloudRunWebhookServer", daemon=True)
     t.start()
-    print(f"[CloudRun] HTTP/Webhook server listening on 0.0.0.0:{port}")
+    print(f"[Server] HTTP/Webhook server listening on 0.0.0.0:{port} (path={_expected_webhook_path()})")
     return server
+
+
+def _require_webhook_secret():
+    if not WEBHOOK_SECRET or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", WEBHOOK_SECRET):
+        raise RuntimeError(
+            "WEBHOOK_SECRET не задан или содержит недопустимые символы! "
+            "Задайте WEBHOOK_SECRET (символы A-Z, a-z, 0-9, _ и -) в переменных окружения Render или в локальном .env."
+        )
 
 
 def main():
     import sys
     if not TOKEN:
         raise RuntimeError(
-            "BOT_TOKEN не найден! Задайте переменную окружения BOT_TOKEN (в Cloud Run) или создайте локальный .env."
+            "BOT_TOKEN не найден! Задайте переменную окружения BOT_TOKEN (в Render / Cloud Run) или создайте локальный .env."
         )
 
     if "--netlify" in sys.argv:
+        _require_webhook_secret()
         setup_bot_profile()
         webhook_url = f"{WEBAPP_URL}/.netlify/functions/bot"
-        res = call("setWebhook", url=webhook_url)
+        res = call(
+            "setWebhook",
+            url=webhook_url,
+            secret_token=WEBHOOK_SECRET,
+            allowed_updates=["message", "callback_query", "pre_checkout_query"],
+        )
         print(f"🍪 Профиль настроен! Бот работает 24/7 через облако Netlify: {webhook_url}")
         print("Статус Webhook:", res.get("description", "OK"))
         return
 
-    # Запускаем веб-сервер на 0.0.0.0:$PORT сразу при старте для прохождения проверок Google Cloud Run
+    # Запускаем веб-сервер на 0.0.0.0:$PORT сразу при старте для прохождения проверок Render / Google Cloud Run
     start_healthcheck_server()
     setup_bot_profile()
     admin_poker_bot.start_duel_listener(call, WEBAPP_URL)
 
     webhook_url = resolve_webhook_url()
     if webhook_url and "--local" not in sys.argv:
-        res = call("setWebhook", url=webhook_url)
-        print(f"🍪 Бот ОРЕО запущен в режиме Webhook на Google Cloud Run: {webhook_url}")
+        _require_webhook_secret()
+        res = call(
+            "setWebhook",
+            url=webhook_url,
+            secret_token=WEBHOOK_SECRET,
+            allowed_updates=["message", "callback_query", "pre_checkout_query"],
+        )
+        print(f"🍪 Бот ОРЕО запущен в защищённом режиме Webhook: {webhook_url}")
         print("Статус Webhook:", res.get("description", "OK"))
         while True:
             time.sleep(3600)
 
     call("deleteWebhook")
     offset = 0
-    print("🍪 Бот ОРЕО запущен в режиме Long Polling (HTTP-сервер активен)! Ctrl+C — остановить.")
+    print("🍪 Бот ОРЕО запущен в режиме Long Polling (HTTP healthcheck активен)! Ctrl+C — остановить.")
     while True:
         try:
             updates = call("getUpdates", offset=offset, timeout=60).get("result", [])
         except Exception as e:
-            print("Ошибка сети:", e)
+            print("Ошибка сети:", _redact_secrets(e))
             time.sleep(3)
             continue
         for u in updates:
-            offset = u["update_id"] + 1
-            process_update(u)
+            if isinstance(u, dict) and isinstance(u.get("update_id"), int):
+                offset = u["update_id"] + 1
+                process_update(u)
 
 
 if __name__ == "__main__":

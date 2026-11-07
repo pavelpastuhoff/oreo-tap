@@ -2848,8 +2848,28 @@
     });
   }
 
+  function escapeHtml(val) {
+    return String(val == null ? '' : val)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function sanitizeAvatarUrl(rawUrl, fallbackId) {
+    const u = String(rawUrl || '').trim();
+    if (u && /^https:\/\/[a-z0-9.-]+\//i.test(u)) {
+      return escapeHtml(u);
+    }
+    if (fallbackId && /^\d{5,15}$/.test(String(fallbackId))) {
+      return `/.netlify/functions/bot?action=avatar&amp;user_id=${encodeURIComponent(String(fallbackId))}`;
+    }
+    return '';
+  }
+
   function userAvatarHtml(r, sk, px) {
-    const src = r.photo || (r.id ? `/.netlify/functions/bot?action=avatar&user_id=${encodeURIComponent(r.id)}` : '');
+    const src = sanitizeAvatarUrl(r.photo, r.id);
     if (!src) return skinMini(sk, px);
     const skinBadgeHtml = (sk && sk.id === 'shushik')
       ? `<img src="assets/skins/shushik_badge_star.png" style="width:16px;height:16px;display:block;object-fit:contain" alt="★">`
@@ -2909,7 +2929,7 @@
       const sk = SKINS[r.skin] || SKINS.classic;
       return `<div class="pod p${i + 1}${r.isMe ? ' me' : ''}">
         <div class="pod-av">${i === 0 ? '<span class="crown">👑</span>' : ''}${userAvatarHtml(r, sk, 54)}</div>
-        <div class="pod-name">${r.name}</div>
+        <div class="pod-name">${escapeHtml(r.name)}</div>
         <div class="pod-score">🪙 ${fmtShort(r.coins)}</div>
         <div class="pod-bar">${medals[i]}</div>
       </div>`;
@@ -2921,7 +2941,7 @@
       const sk = SKINS[r.skin] || SKINS.classic;
       const row = document.createElement('div');
       row.className = 'lb-row' + (r.isMe ? ' me' : '');
-      row.innerHTML = `<div class="lb-rank">${idx + 1}</div>${userAvatarHtml(r, sk, 36)}<div class="lb-name">${r.name}</div><div class="lb-score">🪙 ${fmtShort(r.coins)}</div>`;
+      row.innerHTML = `<div class="lb-rank">${idx + 1}</div>${userAvatarHtml(r, sk, 36)}<div class="lb-name">${escapeHtml(r.name)}</div><div class="lb-score">🪙 ${fmtShort(r.coins)}</div>`;
       body.appendChild(row);
     });
   }
