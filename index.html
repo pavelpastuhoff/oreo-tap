@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>ОРЕО — Тапалка & Экосистема</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
@@ -600,7 +603,7 @@
   .wheel-odds .w-win { background: rgba(255,196,0,.2); color: #ffd740; border: 1px solid rgba(255,215,64,.4); }
   .wheel-odds .w-lose { background: rgba(255,59,92,.2); color: #ff8a9d; border: 1px solid rgba(255,59,92,.4); }
 </style>
-<link rel="stylesheet" href="birch_games.css">
+<link rel="stylesheet" href="birch_games.css?v=20261108">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 </head>
 <body>
@@ -826,6 +829,7 @@
   // ---------- НАСТРОЙКИ ОБЛАЧНОЙ БАЗЫ И РЕЛИЗА ----------
   const OREO_CONFIG = {
     FIREBASE_DB_URL: 'https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app/',
+    BACKEND_API_URL: 'https://oreo-tap.onrender.com/api/bot',
     RELEASE_MODE: false,
     RELEASE_SEASON_ID: 1,
     ECONOMY_VERSION: 3, // Экономика v3: воодушевляющие целые числа + быстрый авто-дрон + прогрессивные цены
@@ -1453,7 +1457,7 @@
   // Показываем аватарку текущего игрока в верхней шапке
   const topAvEl = document.querySelector('#profileBtn .avatar');
   if (topAvEl) {
-    const myAvSrc = playerPhoto || (tgUser && tgUser.id ? `/.netlify/functions/bot?action=avatar&user_id=${encodeURIComponent(playerId)}` : '');
+    const myAvSrc = playerPhoto || (tgUser && tgUser.id ? `${OREO_CONFIG.BACKEND_API_URL}?action=avatar&user_id=${encodeURIComponent(playerId)}` : '');
     if (myAvSrc) {
       const img = new Image();
       img.onload = () => { topAvEl.innerHTML = ''; topAvEl.appendChild(img); };
@@ -2863,7 +2867,7 @@
       return escapeHtml(u);
     }
     if (fallbackId && /^\d{5,15}$/.test(String(fallbackId))) {
-      return `/.netlify/functions/bot?action=avatar&amp;user_id=${encodeURIComponent(String(fallbackId))}`;
+      return `${escapeHtml(OREO_CONFIG.BACKEND_API_URL)}?action=avatar&amp;user_id=${encodeURIComponent(String(fallbackId))}`;
     }
     return '';
   }
@@ -3014,7 +3018,7 @@
       if (OREO_CONFIG.RELEASE_MODE) {
         try {
           showToast('⏳ Создаём счёт Telegram Stars…');
-          const r = await fetch(`/.netlify/functions/bot?action=invoice&pack=magnat&user_id=${encodeURIComponent(playerId)}`);
+          const r = await fetch(`${OREO_CONFIG.BACKEND_API_URL}?action=invoice&pack=magnat&user_id=${encodeURIComponent(playerId)}`);
           const d = await r.json();
           if (d && d.ok && d.result && tg && tg.openInvoice) {
             tg.openInvoice(d.result, status => {
@@ -3164,7 +3168,7 @@
 
   refreshHud();
   syncCloudLeaderboard();
-  setTimeout(() => { fetch('/.netlify/functions/bot?action=owl_check').catch(() => {}); }, 4000);
+  setTimeout(() => { fetch(`${OREO_CONFIG.BACKEND_API_URL}?action=owl_check`).catch(() => {}); }, 4000);
 
   // Поддержка мульти-тача, кликов мыши и клавиатуры (без зажатия клавиши!)
   stage.addEventListener('pointerdown', e => {
@@ -3230,8 +3234,8 @@
   window.db = OREO_CONFIG.FIREBASE_DB_URL;
 })();
 </script>
-<script src="birch_games.js"></script>
-<link rel="stylesheet" href="arena_bets.css">
-<script src="arena_bets.js"></script>
+<script src="birch_games.js?v=20261108"></script>
+<link rel="stylesheet" href="arena_bets.css?v=20261108">
+<script src="arena_bets.js?v=20261108"></script>
 </body>
 </html>

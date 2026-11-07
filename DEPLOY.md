@@ -41,7 +41,7 @@ gcloud run services update oreo-bot --region europe-west4 --update-env-vars WEBH
 Либо укажите все переменные сразу при деплое:
 
 ```powershell
-gcloud run deploy oreo-bot --source . --region europe-west4 --allow-unauthenticated --set-env-vars BOT_TOKEN="твой_токен",WEBHOOK_URL="https://oreo-bot-xxxxxxxxxx-ez.a.run.app/webhook",WEBAPP_URL="https://oreo-67-bot.netlify.app"
+gcloud run deploy oreo-bot --source . --region europe-west4 --allow-unauthenticated --set-env-vars BOT_TOKEN="твой_токен",WEBHOOK_URL="https://oreo-bot-xxxxxxxxxx-ez.a.run.app/webhook",WEBAPP_URL="https://pavelpastuhoff.github.io/oreo-tap/"
 ```
 
 ## Поддерживаемые переменные окружения
@@ -52,6 +52,6 @@ gcloud run deploy oreo-bot --source . --region europe-west4 --allow-unauthentica
 | `WEBHOOK_SECRET` | Да (для Webhook) | Криптографический секрет для проверки заголовка `X-Telegram-Bot-Api-Secret-Token` |
 | `PORT` | Нет (задаётся Render / Cloud Run) | Порт веб-сервера (по умолчанию `8080`, слушает `0.0.0.0`) |
 | `WEBHOOK_URL` | Нет (на Render берётся `RENDER_EXTERNAL_URL`) | Публичный HTTPS-адрес сервиса для автоматической установки `setWebhook` |
-| `WEBAPP_URL` | Нет | URL Telegram Mini App (по умолчанию `https://oreo-67-bot.netlify.app`) |
+| `WEBAPP_URL` | Нет | URL Telegram Mini App на статическом хостинге (по умолчанию `https://pavelpastuhoff.github.io/oreo-tap/`) |
 | `BOT_USERNAME` | Нет | Имя бота без `@` (по умолчанию `oreo_67_bot`) |
 | `FIREBASE_DB_URL` | Нет | URL базы данных Firebase Realtime Database |

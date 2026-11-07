@@ -54,7 +54,30 @@ _raw_webhook_secret = os.getenv("WEBHOOK_SECRET")
 WEBHOOK_SECRET = _raw_webhook_secret.strip() if _raw_webhook_secret else None
 
 BOT_USERNAME = os.getenv("BOT_USERNAME") or "oreo_67_bot"
-WEBAPP_URL = os.getenv("WEBAPP_URL") or "https://oreo-67-bot.netlify.app"
+
+
+def _normalize_webapp_base(raw_url: str) -> str:
+    u = (raw_url or "https://pavelpastuhoff.github.io/oreo-tap/").strip()
+    parsed = urllib.parse.urlsplit(u)
+    path = parsed.path or "/"
+    if not path.endswith("/") and not path.endswith(".html"):
+        path = f"{path}/"
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+WEBAPP_URL = _normalize_webapp_base(os.getenv("WEBAPP_URL") or "https://pavelpastuhoff.github.io/oreo-tap/")
+APP_VERSION = (os.getenv("APP_VERSION") or "20261108").strip()
+
+
+def build_webapp_url(**params) -> str:
+    q = {k: v for k, v in params.items() if v is not None and v != ""}
+    if APP_VERSION:
+        q.setdefault("v", APP_VERSION)
+    if not q:
+        return WEBAPP_URL
+    return f"{WEBAPP_URL}?{urllib.parse.urlencode(q)}"
+
+
 WEBHOOK_URL = (
     os.getenv("WEBHOOK_URL")
     or os.getenv("RENDER_EXTERNAL_URL")
@@ -67,8 +90,35 @@ if not WEBHOOK_PATH.startswith("/"):
     WEBHOOK_PATH = f"/{WEBHOOK_PATH}"
 
 MAX_WEBHOOK_BODY_BYTES = 262_144  # 256 KB
+MAX_AVATAR_BYTES = 2 * 1024 * 1024  # 2 MB
 _WEBHOOK_SEMAPHORE = threading.BoundedSemaphore(32)
+_AVATAR_CACHE_LOCK = threading.Lock()
+_AVATAR_CACHE = {}  # {uid_str: (expires_ts, bytes_or_none, content_type)}
 _TOKEN_RE = re.compile(r"[0-9]{8,12}:[A-Za-z0-9_-]{30,50}")
+
+STAR_PACKS = {
+    "magnat": {
+        "title": "Пакет «Магнат ОРЕО»",
+        "description": "+100 ОРЕО-Кристаллов 💎 и +250 000 печенько-коинов 🪙",
+        "stars": 99,
+        "payload": "pack_magnat_100gems_250k",
+        "legacy_payloads": ("pack_magnat_100gems_25k",),
+    },
+    "vip_energy": {
+        "title": "VIP Безлимитная Энергия ♾️",
+        "description": "Энергия никогда не заканчивается — тапай ОРЕО без лимитов!",
+        "stars": 75,
+        "payload": "pack_vip_energy",
+        "legacy_payloads": (),
+    },
+    "gold_case": {
+        "title": "Золотой VIP-Кейс Магната 🏆",
+        "description": "50% шанс на Легендарный Золотой ОРЕО и 20% на Дима Твикс Cosmic!",
+        "stars": 49,
+        "payload": "pack_gold_case",
+        "legacy_payloads": (),
+    },
+}
 
 
 def _redact_secrets(val) -> str:
@@ -303,7 +353,7 @@ def setup_bot_profile():
     try:
         call(
             "setChatMenuButton",
-            menu_button={"type": "web_app", "text": "🍪 Играть", "web_app": {"url": WEBAPP_URL}},
+            menu_button={"type": "web_app", "text": "🍪 Играть", "web_app": {"url": build_webapp_url()}},
         )
         call(
             "setMyCommands",
@@ -337,11 +387,49 @@ def setup_bot_profile():
         print("Предупреждение при настройке профиля бота:", _redact_secrets(e))
 
 
+def handle_pre_checkout_query(pcq):
+    if not isinstance(pcq, dict) or not pcq.get("id"):
+        return
+    raw_payload = str(pcq.get("invoice_payload") or "")
+    payload_prefix = raw_payload.split(":", 1)[0]
+    matched_pack = None
+    for pack in STAR_PACKS.values():
+        if payload_prefix == pack["payload"] or payload_prefix in pack.get("legacy_payloads", ()):
+            matched_pack = pack
+            break
+    try:
+        total_amount = int(pcq.get("total_amount") or 0)
+    except (TypeError, ValueError):
+        total_amount = -1
+    is_valid = (
+        pcq.get("currency") == "XTR"
+        and matched_pack is not None
+        and total_amount == matched_pack["stars"]
+    )
+    call(
+        "answerPreCheckoutQuery",
+        pre_checkout_query_id=pcq["id"],
+        ok=is_valid,
+        error_message=None if is_valid else "Некорректные параметры счёта. Попробуйте создать заказ заново.",
+    )
+
+
 def handle_message(msg):
     if not isinstance(msg, dict):
         return
     chat_id = (msg.get("chat") or {}).get("id")
     if not chat_id:
+        return
+    if msg.get("successful_payment"):
+        call(
+            "sendMessage",
+            chat_id=chat_id,
+            text=(
+                "🎉 <b>Оплата через Telegram Stars прошла успешно!</b>\n"
+                "Твои 💎 ОРЕО-Кристаллы и бонусы уже зачислены в игру!"
+            ),
+            parse_mode="HTML",
+        )
         return
     if admin_poker_bot.handle_admin_or_duel_message(msg, call, send_card, WEBAPP_URL):
         return
@@ -356,7 +444,7 @@ def handle_message(msg):
         if len(parts) > 1:
             ref_param = parts[1].strip()
 
-    app_url = f"{WEBAPP_URL}?ref={urllib.parse.quote(ref_param)}" if ref_param else WEBAPP_URL
+    app_url = build_webapp_url(ref=ref_param)
     ref_link = make_ref_link(user_id)
 
     cmd = text_in.split()[0].lower().split("@")[0] if text_in else "/start"
@@ -402,7 +490,7 @@ def handle_callback(cb):
         return
 
     ref_link = make_ref_link(user_id)
-    app_url = WEBAPP_URL
+    app_url = build_webapp_url()
 
     if data == "tab_cases":
         edit_card(chat_id, message_id, has_photo, build_cases_text(), back_keyboard(app_url, ref_link))
@@ -421,7 +509,9 @@ def process_update(u):
     if not isinstance(u, dict):
         return
     try:
-        if "message" in u:
+        if "pre_checkout_query" in u:
+            handle_pre_checkout_query(u["pre_checkout_query"])
+        elif "message" in u:
             handle_message(u["message"])
         elif "callback_query" in u:
             handle_callback(u["callback_query"])
@@ -450,13 +540,89 @@ def _expected_webhook_path() -> str:
     return WEBHOOK_PATH
 
 
+def _fetch_telegram_avatar(uid_str: str):
+    now = time.time()
+    with _AVATAR_CACHE_LOCK:
+        cached = _AVATAR_CACHE.get(uid_str)
+        if cached and cached[0] > now:
+            return cached[1], cached[2]
+
+    img_bytes = None
+    content_type = "image/jpeg"
+    try:
+        photos_res = call("getUserProfilePhotos", user_id=int(uid_str), limit=1)
+        photos = ((photos_res or {}).get("result") or {}).get("photos") or []
+        if photos and photos[0]:
+            chosen = photos[0][1] if len(photos[0]) > 1 else photos[0][0]
+            file_id = chosen.get("file_id")
+            if file_id:
+                file_res = call("getFile", file_id=file_id)
+                file_path = ((file_res or {}).get("result") or {}).get("file_path") or ""
+                if file_path and ".." not in file_path and not file_path.startswith("/"):
+                    safe_path = urllib.parse.quote(file_path, safe="/")
+                    file_url = f"https://api.telegram.org/file/bot{TOKEN}/{safe_path}"
+                    with urllib.request.urlopen(file_url, timeout=10) as resp:
+                        data = resp.read(MAX_AVATAR_BYTES + 1)
+                        if len(data) <= MAX_AVATAR_BYTES and data:
+                            img_bytes = data
+                            guessed = mimetypes.guess_type(file_path)[0]
+                            if guessed and guessed.startswith("image/"):
+                                content_type = guessed
+    except Exception:
+        img_bytes = None
+
+    ttl = 3600.0 if img_bytes is not None else 600.0
+    with _AVATAR_CACHE_LOCK:
+        if len(_AVATAR_CACHE) >= 256:
+            _AVATAR_CACHE.clear()
+        _AVATAR_CACHE[uid_str] = (now + ttl, img_bytes, content_type)
+    return img_bytes, content_type
+
+
+def _resolve_cors_origin(request_origin: str) -> str:
+    parsed_webapp = urllib.parse.urlsplit(WEBAPP_URL)
+    default_origin = f"{parsed_webapp.scheme}://{parsed_webapp.netloc}" if parsed_webapp.netloc else "*"
+    orig = (request_origin or "").strip()
+    if not orig:
+        return default_origin
+    parsed = urllib.parse.urlsplit(orig)
+    host = (parsed.hostname or "").lower()
+    if (
+        orig == default_origin
+        or host.endswith(".github.io")
+        or host in ("localhost", "127.0.0.1")
+    ):
+        return orig
+    return default_origin
+
+
 class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     timeout = 10
 
-    def _respond(self, code: int, body: bytes, send_body: bool = True):
+    def _cors_headers(self) -> dict:
+        allow_origin = _resolve_cors_origin(self.headers.get("Origin") or "")
+        return {
+            "Access-Control-Allow-Origin": allow_origin,
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+            "Cross-Origin-Resource-Policy": "cross-origin",
+            "Vary": "Origin",
+        }
+
+    def _respond(
+        self,
+        code: int,
+        body: bytes,
+        send_body: bool = True,
+        content_type: str = "text/plain; charset=utf-8",
+        extra_headers: dict = None,
+    ):
         self.send_response(code)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("X-Content-Type-Options", "nosniff")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if send_body:
@@ -465,17 +631,86 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     def _respond_ok(self, send_body=True):
         self._respond(200, b"OK", send_body=send_body)
 
-    def do_GET(self):
+    def _handle_bot_api(self, query_str: str, send_body: bool = True):
+        cors = self._cors_headers()
+        if not TOKEN:
+            self._respond(503, b'{"ok":false}', send_body, "application/json; charset=utf-8", cors)
+            return
+
+        qs = urllib.parse.parse_qs(query_str, keep_blank_values=True)
+        action = (qs.get("action") or [""])[0].strip()
+
+        if action == "avatar":
+            raw_uid = (qs.get("user_id") or [""])[0].strip()
+            if not re.fullmatch(r"\d{5,15}", raw_uid):
+                self._respond(400, b"", send_body, "text/plain; charset=utf-8", cors)
+                return
+            img_bytes, ctype = _fetch_telegram_avatar(raw_uid)
+            if not img_bytes:
+                self._respond(404, b"", send_body, "text/plain; charset=utf-8", cors)
+                return
+            hdrs = dict(cors)
+            hdrs["Cache-Control"] = "public, max-age=3600"
+            self._respond(200, img_bytes, send_body, ctype, hdrs)
+            return
+
+        if action == "invoice":
+            pack_key = (qs.get("pack") or ["magnat"])[0].strip()
+            pack = STAR_PACKS.get(pack_key) or STAR_PACKS["magnat"]
+            raw_uid = (qs.get("user_id") or [""])[0].strip()
+            clean_uid = raw_uid if re.fullmatch(r"\d{5,15}", raw_uid) else "anon"
+            try:
+                inv = call(
+                    "createInvoiceLink",
+                    title=pack["title"],
+                    description=pack["description"],
+                    payload=f"{pack['payload']}:{clean_uid}",
+                    provider_token="",
+                    currency="XTR",
+                    prices=[{"label": pack["title"], "amount": pack["stars"]}],
+                )
+                payload_json = json.dumps(
+                    {"ok": bool(inv and inv.get("ok")), "result": (inv or {}).get("result")},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                self._respond(200, payload_json, send_body, "application/json; charset=utf-8", cors)
+            except Exception as e:
+                print("[API] Ошибка создания счёта Stars:", _redact_secrets(e))
+                self._respond(502, b'{"ok":false,"result":null}', send_body, "application/json; charset=utf-8", cors)
+            return
+
+        if action == "owl_check":
+            self._respond(200, b'{"ok":true}', send_body, "application/json; charset=utf-8", cors)
+            return
+
+        self._respond(404, b'{"ok":false}', send_body, "application/json; charset=utf-8", cors)
+
+    def do_OPTIONS(self):
         req_path = self.path.split("?", 1)[0]
+        if req_path in ("/api/bot", "/.netlify/functions/bot"):
+            self._respond(204, b"", False, "text/plain; charset=utf-8", self._cors_headers())
+        else:
+            self._respond(404, b"", False)
+
+    def do_GET(self):
+        parts = self.path.split("?", 1)
+        req_path = parts[0]
+        query_str = parts[1] if len(parts) > 1 else ""
         if req_path in ("/", "/health", "/healthz"):
             self._respond_ok(True)
+        elif req_path in ("/api/bot", "/.netlify/functions/bot"):
+            self._handle_bot_api(query_str, True)
         else:
             self._respond(404, b"Not Found", True)
 
     def do_HEAD(self):
-        req_path = self.path.split("?", 1)[0]
+        parts = self.path.split("?", 1)
+        req_path = parts[0]
+        query_str = parts[1] if len(parts) > 1 else ""
         if req_path in ("/", "/health", "/healthz"):
             self._respond_ok(False)
+        elif req_path in ("/api/bot", "/.netlify/functions/bot"):
+            self._handle_bot_api(query_str, False)
         else:
             self._respond(404, b"Not Found", False)
 
