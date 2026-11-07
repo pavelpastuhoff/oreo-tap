@@ -272,33 +272,7 @@ def admin_home_kb(webapp_url: str) -> dict:
 
 
 def _resolve_bot_token() -> str:
-    env_tok = os.environ.get("BOT_TOKEN", "").strip()
-    if env_tok:
-        return env_tok
-    for mod_name in ("bot", "__main__"):
-        mod = sys.modules.get(mod_name)
-        tok = getattr(mod, "TOKEN", None) if mod else None
-        if tok:
-            return str(tok).strip()
-    dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.isfile(dotenv_path):
-        try:
-            with open(dotenv_path, "r", encoding="utf-8") as f:
-                for raw_line in f:
-                    line = raw_line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    if line.startswith("export "):
-                        line = line[7:].strip()
-                    k, v = line.split("=", 1)
-                    if k.strip() == "BOT_TOKEN":
-                        v = v.strip()
-                        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-                            v = v[1:-1]
-                        return v
-        except OSError:
-            pass
-    return ""
+    return (os.getenv("BOT_TOKEN") or "").strip()
 
 
 def send_text_document(chat_id: int, filename: str, content_text: str, caption: str = "", reply_markup=None):
