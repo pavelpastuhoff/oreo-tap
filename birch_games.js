@@ -742,6 +742,7 @@
     if (!_subView) {
       _livePokerState = null;
       _liveChessState = null;
+      if (window.OreoMusic && window.OreoMusic.leaveRoom) window.OreoMusic.leaveRoom();
     }
     refreshHeaderWallet();
     const tabsEl = document.getElementById('bgTabs');
@@ -2163,8 +2164,12 @@
             <button type="button" class="bg-btn sm ghost" data-ch-mode="10m">⏱ 10 мин</button>
             <button type="button" class="bg-btn sm ghost" data-ch-mode="none">♾️ Без таймера</button>
           </div>
-          <button type="button" class="bg-btn sm wood" id="chessChatToggleBtn">💬 Чат</button>
+          <div class="bg-row" style="gap:4px;flex-wrap:wrap">
+            <button type="button" class="bg-btn sm jb-order-btn" id="chessJukeboxBtn">🔊 Заказать музыку на стол</button>
+            <button type="button" class="bg-btn sm wood" id="chessChatToggleBtn">💬 Чат</button>
+          </div>
         </div>
+        <div id="chessJukeboxBar" hidden></div>
         <div id="chessChatDrawerWrap" hidden></div>
         <div class="bg-clock" id="chessTopClock">
           <div class="bg-clock-meta">
@@ -2204,6 +2209,19 @@
       '#chessChatDrawerWrap',
       `duel_matches/${encodeURIComponent(matchId)}`
     );
+    const chessJbBtn = body.querySelector('#chessJukeboxBtn');
+    if (chessJbBtn) {
+      chessJbBtn.onclick = () => {
+        if (window.OreoMusic && window.OreoMusic.openJukeboxModal) {
+          window.OreoMusic.openJukeboxModal({
+            roomType: 'chess',
+            roomId: matchId,
+            roomState: currentMatch,
+            barEl: body.querySelector('#chessJukeboxBar')
+          });
+        }
+      };
+    }
 
     body.querySelectorAll('[data-ch-mode]').forEach(btn => {
       btn.onclick = async () => {
@@ -2279,6 +2297,10 @@
       _liveChessState = m ? Object.assign({ matchId }, m) : null;
       if (!m || !window.Chess) return;
       chatCtrl.onSyncChat(m.chat);
+      if (window.OreoMusic && window.OreoMusic.syncRoomJukebox) {
+        window.OreoMusic.syncRoomJukebox('chess', matchId, m, body.querySelector('#chessJukeboxBar'));
+        refreshHeaderWallet();
+      }
       if (m.status && m.status !== lastLoggedChessStatus) {
         pushTelemetryAction(`chess_stage:${lastLoggedChessStatus || 'init'}->${m.status}`);
         lastLoggedChessStatus = m.status;
@@ -3609,6 +3631,7 @@
     body.innerHTML = `
       <div class="bg-poker-shell">
         <div class="bg-ptop" id="pokerTopBar"></div>
+        <div id="pokerJukeboxBar" hidden></div>
         <div id="pokerChatDrawerWrap"></div>
         <div class="bg-table-wrap${woodSliceMode ? ' wood-slice' : ''}" id="pokerTableWrap">
           <div class="bg-table${woodSliceMode ? ' wood-slice' : ''}" id="pokerTableSurface"></div>
@@ -3701,6 +3724,10 @@
       _livePokerState = Object.assign({ tableId, isTournament }, tbl);
 
       chatCtrl.onSyncChat(tbl.chat);
+      if (window.OreoMusic && window.OreoMusic.syncRoomJukebox) {
+        window.OreoMusic.syncRoomJukebox('poker', tableId, tbl, body.querySelector('#pokerJukeboxBar'));
+        refreshHeaderWallet();
+      }
 
       if (tbl.stage && tbl.stage !== lastLoggedStage) {
         pushTelemetryAction(`poker_stage:${lastLoggedStage || 'init'}->${tbl.stage}`);
@@ -3736,7 +3763,8 @@
         body.querySelector('#pokerTopBar').innerHTML = `
           <span class="bg-chip gold">Блайнды ${fmt(bl.sb)}/${fmt(bl.bb)} 🪵</span>
           <span class="bg-chip">За столом: ${seats.filter(s => !s.busted).length}/${seats.length}</span>
-          <div class="bg-row" style="gap:5px">
+          <div class="bg-row" style="gap:5px;flex-wrap:wrap">
+            <button class="bg-btn sm jb-order-btn" id="pokerJukeboxBtn">🔊 Заказать музыку на стол</button>
             <button class="bg-btn sm ghost" id="pokerChatToggleBtn">💬 Чат <span class="bg-chat-badge" hidden>0</span></button>
             <button class="bg-btn sm ghost" id="pokerSurfaceBtn" title="Сменить текстуру стола">${woodSliceMode ? '🌿 Сукно' : '🪵 Спил'}</button>
             ${!isActiveHand && tbl.stage !== 'finished' && seats.filter(s => !s.busted && s.stack > 0).length >= 2 ? `<button class="bg-btn sm green" id="pokerDealBtn">🃏 Раздать</button>` : ''}
@@ -3744,6 +3772,19 @@
           </div>
         `;
         chatCtrl.bindToggle();
+        const pokerJbBtn = body.querySelector('#pokerJukeboxBtn');
+        if (pokerJbBtn) {
+          pokerJbBtn.onclick = () => {
+            if (window.OreoMusic && window.OreoMusic.openJukeboxModal) {
+              window.OreoMusic.openJukeboxModal({
+                roomType: 'poker',
+                roomId: tableId,
+                roomState: currentTbl,
+                barEl: body.querySelector('#pokerJukeboxBar')
+              });
+            }
+          };
+        }
         const surfBtn = body.querySelector('#pokerSurfaceBtn');
         if (surfBtn) {
           surfBtn.onclick = () => {

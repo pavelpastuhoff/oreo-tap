@@ -2064,3 +2064,396 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
         return True
 
     return False
+
+
+# ==================== МУЗЫКАЛЬНАЯ СИСТЕМА И JUKEBOX (RENDER BACKEND API) ====================
+
+_MUSIC_TX_LOCK = threading.Lock()
+_SAFE_TRACK_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
+TRACK_MIN_PRICE = 50_000
+TRACK_MAX_PRICE = 300_000
+JUKEBOX_BASE_PRICE = 10_000
+JUKEBOX_DURATION_MS = 180_000  # 3 минуты
+JUKEBOX_MAX_PRICE = 10_240_000
+
+ROOM_TYPE_PATHS = {
+    "poker": "poker_tables",
+    "chess": "duel_matches",
+    "loto": "loto_rooms",
+}
+
+
+def _normalize_owned_tracks(raw_owned) -> list:
+    out = ["tap_lofi"]
+    seen = {"tap_lofi"}
+    items = []
+    if isinstance(raw_owned, list):
+        items = raw_owned
+    elif isinstance(raw_owned, dict):
+        items = list(raw_owned.values())
+    for item in items:
+        s = str(item or "").strip()
+        if s and _SAFE_TRACK_ID_RE.fullmatch(s) and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _sanitize_audio_url(raw_url: str) -> str:
+    u = str(raw_url or "").strip()
+    if not u or len(u) > 512 or any(ch in u for ch in ("\r", "\n", "\x00", '"', "'", "<", ">")):
+        return ""
+    if u.startswith("https://") or u.startswith("assets/music/") or u.startswith("/assets/music/"):
+        return u.lstrip("/") if u.startswith("/assets/music/") else u
+    return ""
+
+
+def _sanitize_cover_url(raw_url: str) -> str:
+    u = str(raw_url or "").strip()
+    if not u or len(u) > 2048 or any(ch in u for ch in ("\r", "\n", "\x00", "<", ">")):
+        return ""
+    if u.startswith("https://") or u.startswith("assets/") or u.startswith("data:image/"):
+        return u
+    return ""
+
+
+def fb_run_transaction(path: str, updater_fn, max_retries: int = 4) -> tuple:
+    """Атомарная транзакция Firebase REST API через X-Firebase-ETag и If-Match."""
+    clean_path = path.lstrip("/")
+    url = f"{FIREBASE_DB_URL}/{clean_path}.json"
+
+    for _ in range(max_retries):
+        req_get = urllib.request.Request(
+            url,
+            headers={"X-Firebase-ETag": "true", "Accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req_get, timeout=12) as resp:
+                etag = resp.headers.get("ETag")
+                raw = resp.read().decode("utf-8")
+                current = json.loads(raw) if raw else None
+        except Exception as e:
+            print(f"[Firebase TX GET {clean_path}] Ошибка:", _redact_err(e))
+            return False, None
+
+        working_copy = json.loads(json.dumps(current)) if current is not None else None
+        next_val = updater_fn(working_copy)
+        if next_val is None:
+            return False, current
+
+        put_headers = {"Content-Type": "application/json"}
+        if etag:
+            put_headers["If-Match"] = etag
+        body = json.dumps(next_val, ensure_ascii=False).encode("utf-8")
+        req_put = urllib.request.Request(url, data=body, headers=put_headers, method="PUT")
+        try:
+            with urllib.request.urlopen(req_put, timeout=12) as put_resp:
+                saved_raw = put_resp.read().decode("utf-8")
+                saved = json.loads(saved_raw) if saved_raw else next_val
+                return True, saved
+        except urllib.error.HTTPError as he:
+            if he.code == 412:
+                continue
+            print(f"[Firebase TX PUT {clean_path}] HTTP {he.code}:", _redact_err(he))
+            return False, current
+        except Exception as e:
+            print(f"[Firebase TX PUT {clean_path}] Ошибка:", _redact_err(e))
+            return False, current
+
+    return False, None
+
+
+def buy_music_track(user_id: str, track_id: str, price_raw, meta: dict = None) -> dict:
+    """Покупка трека за игровые коины с защитой от повторного списания."""
+    uid = str(user_id or "").strip()
+    tid = str(track_id or "").strip()
+    if not uid or len(uid) > 64:
+        return {"ok": False, "error": "invalid_user_id", "message": "Некорректный ID игрока"}
+    try:
+        safe_uid = _fb_key(uid)
+    except ValueError:
+        return {"ok": False, "error": "invalid_user_id", "message": "Некорректный ID игрока"}
+
+    if not _SAFE_TRACK_ID_RE.fullmatch(tid):
+        return {"ok": False, "error": "invalid_track_id", "message": "Некорректный ID трека"}
+
+    try:
+        price = _parse_safe_int(price_raw, min_val=0, max_val=MAX_SAFE_AMOUNT)
+    except (ValueError, OverflowError):
+        return {"ok": False, "error": "invalid_price", "message": "Некорректная цена трека"}
+
+    if tid == "tap_lofi":
+        price = 0
+    elif price < TRACK_MIN_PRICE or price > TRACK_MAX_PRICE:
+        return {
+            "ok": False,
+            "error": "invalid_price_range",
+            "message": f"Цена трека должна быть от {fmt_num(TRACK_MIN_PRICE)} до {fmt_num(TRACK_MAX_PRICE)} коинов",
+        }
+
+    meta = meta if isinstance(meta, dict) else {}
+    clean_meta = {
+        "id": tid,
+        "title": str(meta.get("title") or tid)[:80],
+        "artist": str(meta.get("artist") or "Royalty-Free Artist")[:80],
+        "genre": str(meta.get("genre") or "lofi")[:32],
+        "audio_url": _sanitize_audio_url(meta.get("audio_url") or meta.get("url") or ""),
+        "cover": _sanitize_cover_url(meta.get("cover") or ""),
+        "price": price,
+        "boughtAt": int(time.time() * 1000),
+    }
+
+    tx_state = {"status": "error", "coins": 0, "owned": ["tap_lofi"], "meta_map": {}}
+
+    with _MUSIC_TX_LOCK:
+        def _mutate_player(pdata):
+            if not isinstance(pdata, dict):
+                tx_state["status"] = "player_not_found"
+                return None
+
+            wallet = pdata.get("wallet") if isinstance(pdata.get("wallet"), dict) else {}
+            cur_coins = int(round(float(pdata.get("coins") if pdata.get("coins") is not None else wallet.get("coins") or 0)))
+            cur_coins = max(0, cur_coins)
+            owned_list = _normalize_owned_tracks(pdata.get("ownedTracks"))
+            owned_meta = pdata.get("ownedTrackMeta") if isinstance(pdata.get("ownedTrackMeta"), dict) else {}
+
+            if tid in owned_list:
+                tx_state["status"] = "already_owned"
+                tx_state["coins"] = cur_coins
+                tx_state["owned"] = owned_list
+                tx_state["meta_map"] = owned_meta
+                return None
+
+            if cur_coins < price:
+                tx_state["status"] = "insufficient_coins"
+                tx_state["coins"] = cur_coins
+                tx_state["owned"] = owned_list
+                tx_state["meta_map"] = owned_meta
+                return None
+
+            now_ms = int(time.time() * 1000)
+            new_coins = cur_coins - price
+            owned_list.append(tid)
+            owned_meta = dict(owned_meta)
+            owned_meta[tid] = clean_meta
+
+            pdata["coins"] = new_coins
+            pdata["taps"] = new_coins
+            pdata["count"] = new_coins
+            pdata["ownedTracks"] = owned_list
+            pdata["ownedTrackMeta"] = owned_meta
+            pdata["ts"] = now_ms
+            if isinstance(pdata.get("wallet"), dict):
+                pdata["wallet"]["coins"] = new_coins
+
+            tx_state["status"] = "purchased"
+            tx_state["coins"] = new_coins
+            tx_state["owned"] = owned_list
+            tx_state["meta_map"] = owned_meta
+            return pdata
+
+        committed, _ = fb_run_transaction(f"players/{safe_uid}", _mutate_player)
+
+    st = tx_state["status"]
+    if st == "already_owned":
+        return {
+            "ok": True,
+            "already_owned": True,
+            "coins": tx_state["coins"],
+            "track_id": tid,
+            "ownedTracks": tx_state["owned"],
+            "ownedTrackMeta": tx_state["meta_map"],
+        }
+    if st == "purchased" and committed:
+        return {
+            "ok": True,
+            "already_owned": False,
+            "coins": tx_state["coins"],
+            "price": price,
+            "track_id": tid,
+            "ownedTracks": tx_state["owned"],
+            "ownedTrackMeta": tx_state["meta_map"],
+        }
+    if st == "insufficient_coins":
+        return {
+            "ok": False,
+            "error": "insufficient_coins",
+            "message": f"Недостаточно коинов (нужно {fmt_num(price)} 🪙)",
+            "coins": tx_state["coins"],
+            "required": price,
+        }
+    if st == "player_not_found":
+        return {
+            "ok": False,
+            "error": "player_not_found",
+            "message": "Профиль игрока ещё не синхронизирован с облаком",
+        }
+    return {"ok": False, "error": "tx_failed", "message": "Не удалось завершить транзакцию, попробуйте снова"}
+
+
+def order_table_jukebox(
+    user_id: str,
+    room_type: str,
+    room_id: str,
+    track_id: str,
+    track_url: str,
+    track_title: str = "",
+    track_artist: str = "",
+    ordered_by: str = "",
+) -> dict:
+    """Заказ трека на мультиплеерный стол (Покер, Шахматы, Лото) на 3 минуты с перебиванием x2."""
+    uid = str(user_id or "").strip()
+    rtype = str(room_type or "poker").strip().lower()
+    rid = str(room_id or "").strip()
+    tid = str(track_id or "custom").strip()
+    clean_url = _sanitize_audio_url(track_url)
+
+    if not uid or len(uid) > 64:
+        return {"ok": False, "error": "invalid_user_id", "message": "Некорректный ID игрока"}
+    if rtype not in ROOM_TYPE_PATHS:
+        return {"ok": False, "error": "invalid_room_type", "message": "Неподдерживаемый тип комнаты"}
+    if not rid or len(rid) > 96:
+        return {"ok": False, "error": "invalid_room_id", "message": "Не указан ID стола"}
+    if not clean_url:
+        return {"ok": False, "error": "invalid_track_url", "message": "Некорректная ссылка на аудиопоток"}
+    if not _SAFE_TRACK_ID_RE.fullmatch(tid):
+        tid = "track"
+
+    try:
+        safe_uid = _fb_key(uid)
+        safe_rid = _fb_key(rid)
+    except ValueError:
+        return {"ok": False, "error": "invalid_key", "message": "Недопустимые символы в идентификаторе"}
+
+    room_path = f"{ROOM_TYPE_PATHS[rtype]}/{safe_rid}"
+
+    with _MUSIC_TX_LOCK:
+        room_data = fb_get(room_path)
+        if not isinstance(room_data, dict):
+            if rtype == "loto":
+                room_data = {"id": rid}
+            else:
+                return {"ok": False, "error": "room_not_found", "message": "Игровой стол не найден или уже закрыт"}
+
+        now_ms = int(time.time() * 1000)
+        cur_jb = room_data.get("jukebox") if isinstance(room_data.get("jukebox"), dict) else {}
+        cur_expires = int(round(float(cur_jb.get("expires_at") or room_data.get("expires_at") or 0)))
+        cur_active_url = str(cur_jb.get("current_track_url") or room_data.get("current_track_url") or "").strip()
+
+        if cur_active_url and cur_expires > now_ms:
+            prev_price = int(round(float(cur_jb.get("order_price") or JUKEBOX_BASE_PRICE)))
+            required_cost = min(JUKEBOX_MAX_PRICE, max(JUKEBOX_BASE_PRICE * 2, prev_price * 2))
+            is_override = True
+        else:
+            required_cost = JUKEBOX_BASE_PRICE
+            is_override = False
+
+        tx_state = {"status": "error", "coins": 0, "display_name": ""}
+
+        def _deduct_jukebox(pdata):
+            if not isinstance(pdata, dict):
+                tx_state["status"] = "player_not_found"
+                return None
+
+            wallet = pdata.get("wallet") if isinstance(pdata.get("wallet"), dict) else {}
+            cur_coins = int(round(float(pdata.get("coins") if pdata.get("coins") is not None else wallet.get("coins") or 0)))
+            cur_coins = max(0, cur_coins)
+
+            uname = str(pdata.get("username") or "").strip().lstrip("@")
+            pname = str(pdata.get("name") or f"Игрок {uid}").strip()
+            tx_state["display_name"] = f"@{uname}" if uname else pname
+
+            if cur_coins < required_cost:
+                tx_state["status"] = "insufficient_coins"
+                tx_state["coins"] = cur_coins
+                return None
+
+            new_coins = cur_coins - required_cost
+            ts_now = int(time.time() * 1000)
+            pdata["coins"] = new_coins
+            pdata["taps"] = new_coins
+            pdata["count"] = new_coins
+            pdata["ts"] = ts_now
+            if isinstance(pdata.get("wallet"), dict):
+                pdata["wallet"]["coins"] = new_coins
+
+            tx_state["status"] = "deducted"
+            tx_state["coins"] = new_coins
+            return pdata
+
+        committed, _ = fb_run_transaction(f"players/{safe_uid}", _deduct_jukebox)
+        if tx_state["status"] == "insufficient_coins":
+            return {
+                "ok": False,
+                "error": "insufficient_coins",
+                "message": f"Недостаточно коинов (нужно {fmt_num(required_cost)} 🪙)",
+                "coins": tx_state["coins"],
+                "required": required_cost,
+            }
+        if tx_state["status"] == "player_not_found":
+            return {
+                "ok": False,
+                "error": "player_not_found",
+                "message": "Профиль игрока не найден в базе",
+            }
+        if not committed or tx_state["status"] != "deducted":
+            return {"ok": False, "error": "tx_failed", "message": "Не удалось списать коины, попробуйте ещё раз"}
+
+        clean_caller = str(ordered_by or "").strip()[:64] or tx_state["display_name"] or f"Игрок {uid}"
+        clean_title = str(track_title or "Трек")[:80]
+        clean_artist = str(track_artist or "")[:80]
+        order_now = int(time.time() * 1000)
+        expires_at = order_now + JUKEBOX_DURATION_MS
+
+        jukebox_obj = {
+            "order_id": f"jb_{order_now}_{uuid.uuid4().hex[:6]}",
+            "track_id": tid,
+            "current_track_url": clean_url,
+            "track_title": clean_title,
+            "track_artist": clean_artist,
+            "ordered_by": clean_caller,
+            "ordered_by_uid": uid,
+            "order_price": required_cost,
+            "next_override_price": min(JUKEBOX_MAX_PRICE, required_cost * 2),
+            "is_override": is_override,
+            "ordered_at": order_now,
+            "expires_at": expires_at,
+        }
+
+        patched = fb_patch(
+            room_path,
+            {
+                "current_track_url": clean_url,
+                "ordered_by": clean_caller,
+                "expires_at": expires_at,
+                "jukebox": jukebox_obj,
+            },
+        )
+        if patched is None:
+            # Компенсационный возврат коинов при сбое записи комнаты
+            def _refund_jukebox(pdata):
+                if not isinstance(pdata, dict):
+                    return None
+                c = max(0, int(round(float(pdata.get("coins") or 0)))) + required_cost
+                pdata["coins"] = c
+                pdata["taps"] = c
+                pdata["count"] = c
+                if isinstance(pdata.get("wallet"), dict):
+                    pdata["wallet"]["coins"] = c
+                tx_state["coins"] = c
+                return pdata
+
+            fb_run_transaction(f"players/{safe_uid}", _refund_jukebox)
+            return {"ok": False, "error": "room_write_failed", "message": "Ошибка обновления стола, коины возвращены"}
+
+        return {
+            "ok": True,
+            "coins": tx_state["coins"],
+            "cost": required_cost,
+            "is_override": is_override,
+            "current_track_url": clean_url,
+            "ordered_by": clean_caller,
+            "expires_at": expires_at,
+            "jukebox": jukebox_obj,
+        }

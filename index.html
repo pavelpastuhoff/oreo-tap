@@ -603,7 +603,8 @@
   .wheel-odds .w-win { background: rgba(255,196,0,.2); color: #ffd740; border: 1px solid rgba(255,215,64,.4); }
   .wheel-odds .w-lose { background: rgba(255,59,92,.2); color: #ff8a9d; border: 1px solid rgba(255,59,92,.4); }
 </style>
-<link rel="stylesheet" href="birch_games.css?v=20261108">
+<link rel="stylesheet" href="birch_games.css?v=20261108_s2">
+<link rel="stylesheet" href="music_system.css?v=20261108_s2">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 </head>
 <body>
@@ -655,7 +656,8 @@
 <div class="side right">
   <button class="round-btn" id="camToggleBtn">📷<span class="hide" id="camStatusTxt">ВЫКЛ</span></button>
   <button class="round-btn" id="filterCycleBtn">🎭<span class="hide" id="filterNameTxt">Неон 67</span></button>
-  <button class="round-btn active" id="musicToggleBtn">🎵<span class="hide" id="musicStatusTxt">АВТО</span></button>
+  <button class="round-btn boombox-side-btn" id="boomboxOpenBtn" title="Личный Бумбокс и Радио">📻<span class="hide" id="boomboxStatusTxt">РАДИО</span></button>
+  <button class="round-btn active" id="musicToggleBtn" title="Включить / Выключить звук">🔊<span class="hide" id="musicStatusTxt">ВКЛ</span></button>
 </div>
 
 <!-- 3D Печенька ОРЕО -->
@@ -883,7 +885,9 @@
     wheelSpunDate: '',
     economyVersion: 3,
     gemsWipeDone: 1,
-    releaseWipeDone: 0
+    releaseWipeDone: 0,
+    ownedTracks: ['tap_lofi'],
+    ownedTrackMeta: {}
   };
 
   // Переход на экономику v3 (возврат больших красивых целых чисел вместо дробных 1.5379 из v2):
@@ -1388,49 +1392,43 @@
     if (!camEnabled && !camDenied) enableCamera(true);
   };
 
-  // ---------- ФОНОВАЯ ПЕСНЯ "lil ptiric.m4a" ВО ВРЕМЯ ТАПАНИЯ ----------
-  const bgMusic = new Audio('lil%20ptiric.m4a');
+  // ---------- ЗОНАЛЬНАЯ ФОНОВАЯ МУЗЫКА (music_system.js + резервный трек) ----------
+  const bgMusic = new Audio('assets/music/tap_lofi.mp3');
   bgMusic.loop = true;
-  bgMusic.preload = 'auto';
-  bgMusic.volume = 0.75;
-  let musicMode = 'auto'; // 'auto' (играет во время тапания), 'on' (всегда), 'off' (выкл)
+  bgMusic.preload = 'none';
+  bgMusic.volume = 0.68;
+  let musicMode = 'on';
   let musicFadeTimer = null;
 
   function triggerMusicOnTap() {
+    if (window.OreoMusic) {
+      window.OreoMusic.notifyUserTap();
+      return;
+    }
     if (musicMode === 'off' || isAnyMiniOverlayOpen()) return;
     if (bgMusic.paused) {
-      bgMusic.volume = 0.78;
+      bgMusic.volume = 0.68;
       bgMusic.play().catch(() => {});
-    }
-    if (musicMode === 'auto') {
-      clearTimeout(musicFadeTimer);
-      musicFadeTimer = setTimeout(() => {
-        if (musicMode === 'auto' && !bgMusic.paused) {
-          bgMusic.pause();
-        }
-      }, 4200);
     }
   }
 
   $('musicToggleBtn').onclick = () => {
-    if (musicMode === 'auto') {
-      musicMode = 'on';
-      $('musicStatusTxt').textContent = 'НОН-СТОП';
-      $('musicToggleBtn').classList.add('active');
-      clearTimeout(musicFadeTimer);
-      bgMusic.play().catch(() => {});
-      showToast('🎵 Трек lil ptiric: играет постоянно!');
-    } else if (musicMode === 'on') {
+    if (window.OreoMusic) {
+      window.OreoMusic.toggleMute();
+      return;
+    }
+    if (musicMode === 'on') {
       musicMode = 'off';
-      $('musicStatusTxt').textContent = 'ВЫКЛ';
+      $('musicStatusTxt').textContent = 'MUTE';
       $('musicToggleBtn').classList.remove('active');
       bgMusic.pause();
       showToast('🔇 Фоновая музыка выключена');
     } else {
-      musicMode = 'auto';
-      $('musicStatusTxt').textContent = 'АВТО';
+      musicMode = 'on';
+      $('musicStatusTxt').textContent = 'ВКЛ';
       $('musicToggleBtn').classList.add('active');
-      showToast('🎵 Трек lil ptiric: играет при тапании!');
+      bgMusic.play().catch(() => {});
+      showToast('🔊 Фоновая музыка включена');
     }
   };
 
@@ -1665,6 +1663,19 @@
               }).catch(() => {});
               denisEntry.coins = DENIS_RESTORE_COINS;
               denisEntry.denisRefund2B = 1;
+            }
+          }
+
+          const myCloudEntry = data[String(playerId)];
+          if (myCloudEntry && myCloudEntry.ownedTracks) {
+            const cOwned = Array.isArray(myCloudEntry.ownedTracks)
+              ? myCloudEntry.ownedTracks
+              : Object.values(myCloudEntry.ownedTracks);
+            const curOwned = Array.isArray(state.ownedTracks) ? state.ownedTracks : ['tap_lofi'];
+            const mergedOwned = Array.from(new Set(['tap_lofi', ...curOwned, ...cOwned.map(String)]));
+            state.ownedTracks = mergedOwned;
+            if (myCloudEntry.ownedTrackMeta && typeof myCloudEntry.ownedTrackMeta === 'object') {
+              state.ownedTrackMeta = Object.assign({}, state.ownedTrackMeta || {}, myCloudEntry.ownedTrackMeta);
             }
           }
 
@@ -1993,6 +2004,7 @@
     lastRealTapAt = performance.now();
     if (isSleeping) {
       isSleeping = false;
+      if (window.OreoMusic) window.OreoMusic.setSleepState(false);
       if ($('afkWakeBtn')) window._closeOreoModal();
       showToast('☀️ Ферма ОРЕО проснулась!');
     }
@@ -2002,6 +2014,7 @@
     if (isSleeping) return;
     isSleeping = true;
     try { bgMusic.pause(); } catch (e) {}
+    if (window.OreoMusic) window.OreoMusic.setSleepState(true);
     if (!$('modalBackdrop').classList.contains('show')) {
       showModal(`
         <div style="font-size:52px">😴🍪</div>
@@ -2134,7 +2147,7 @@
 
       state.dailyTaps++;
       if (combo > state.dailyMaxCombo) state.dailyMaxCombo = combo;
-      if (camEnabled || !bgMusic.paused) state.dailyCamMusicTaps++;
+      if (camEnabled || !bgMusic.paused || (window.OreoMusic && window.OreoMusic.isPlaying())) state.dailyCamMusicTaps++;
     }
 
     const crit = !auto && Math.random() < critChance();
@@ -3194,9 +3207,12 @@
         stopMainRafLoop();
       } else {
         startMainRafLoop();
-        if (musicMode === 'on' && bgMusic.paused) {
+        if (!window.OreoMusic && musicMode === 'on' && bgMusic.paused) {
           bgMusic.play().catch(() => {});
         }
+      }
+      if (window.OreoMusic) {
+        window.OreoMusic.notifyOverlayChange(key, Boolean(isOpen));
       }
     },
     isOverlayOpen: isAnyMiniOverlayOpen,
@@ -3213,7 +3229,11 @@
       if (patch && patch.energy !== undefined) state.energy = Math.max(0, Math.round(Number(patch.energy) || 0));
       if (patch && patch.sticks !== undefined) state.sticks = Math.max(0, Math.round(Number(patch.sticks) || 0));
       if (patch && patch.choppedLogs !== undefined) state.choppedLogs = Math.max(0, Math.round(Number(patch.choppedLogs) || 0));
-      count = Math.max(count, state.coins);
+      if (patch && patch.count !== undefined) {
+        count = roundCoin(patch.count);
+      } else {
+        count = Math.max(count, state.coins);
+      }
       state.count = count;
       save();
       refreshHud();
@@ -3231,11 +3251,13 @@
     playerPhoto,
     dbUrl: OREO_CONFIG.FIREBASE_DB_URL
   };
+  window.OREO_BACKEND_API_URL = OREO_CONFIG.BACKEND_API_URL;
   window.db = OREO_CONFIG.FIREBASE_DB_URL;
 })();
 </script>
-<script src="birch_games.js?v=20261108"></script>
-<link rel="stylesheet" href="arena_bets.css?v=20261108">
-<script src="arena_bets.js?v=20261108"></script>
+<script src="birch_games.js?v=20261108_s2"></script>
+<link rel="stylesheet" href="arena_bets.css?v=20261108_s2">
+<script src="arena_bets.js?v=20261108_s2"></script>
+<script src="music_system.js?v=20261108_s2"></script>
 </body>
 </html>

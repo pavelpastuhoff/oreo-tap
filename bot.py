@@ -637,16 +637,22 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
     def _respond_ok(self, send_body=True):
         self._respond(200, b"OK", send_body=send_body)
 
-    def _handle_bot_api(self, query_str: str, send_body: bool = True):
+    def _handle_bot_api(self, query_str: str, send_body: bool = True, body_data: dict = None):
         cors = self._cors_headers()
-        if not TOKEN:
-            self._respond(503, b'{"ok":false}', send_body, "application/json; charset=utf-8", cors)
-            return
-
         qs = urllib.parse.parse_qs(query_str, keep_blank_values=True)
-        action = (qs.get("action") or [""])[0].strip()
+        payload = body_data if isinstance(body_data, dict) else {}
 
-        api_uid = ((qs.get("user_id") or qs.get("chat_id") or [""])[0]).strip()
+        def _param(name: str, default: str = "") -> str:
+            if name in payload and payload[name] is not None and not isinstance(payload[name], (dict, list)):
+                return str(payload[name]).strip()
+            vals = qs.get(name)
+            if vals:
+                return str(vals[0]).strip()
+            return default
+
+        action = _param("action")
+
+        api_uid = _param("user_id") or _param("chat_id")
         api_user_dict = None
         if not re.fullmatch(r"\d{5,15}", api_uid):
             init_data_raw = (self.headers.get("X-Telegram-Init-Data") or "").strip()
@@ -657,12 +663,69 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
                     if user_json_str:
                         parsed_u = json.loads(user_json_str)
                         if isinstance(parsed_u, dict) and parsed_u.get("id"):
-                            api_uid = str(parsed_u["id"]).strip()
+                            if not api_uid:
+                                api_uid = str(parsed_u["id"]).strip()
                             api_user_dict = parsed_u
                 except Exception:
                     pass
         if re.fullmatch(r"\d{5,15}", api_uid):
             admin_poker_bot.ensure_chat_id_registered(api_uid, user=api_user_dict)
+
+        if action == "buy_track":
+            uid = _param("user_id") or api_uid
+            track_id = _param("track_id")
+            price_raw = _param("price", "0")
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            if not meta:
+                meta = {
+                    "title": _param("title"),
+                    "artist": _param("artist"),
+                    "genre": _param("genre"),
+                    "audio_url": _param("audio_url"),
+                    "cover": _param("cover"),
+                }
+            res_dict = admin_poker_bot.buy_music_track(uid, track_id, price_raw, meta=meta)
+            status_code = 200 if res_dict.get("ok") else (400 if res_dict.get("error", "").startswith("invalid") else 402 if res_dict.get("error") == "insufficient_coins" else 422)
+            # Возвращаем 200 для штатных игровых ответов (insufficient_coins), чтобы fetch на клиенте читал JSON без консольных ошибок, и 400 для битых запросов
+            if res_dict.get("error") in ("insufficient_coins", "player_not_found"):
+                status_code = 200
+            out_bytes = json.dumps(res_dict, ensure_ascii=False).encode("utf-8")
+            self._respond(status_code, out_bytes, send_body, "application/json; charset=utf-8", cors)
+            return
+
+        if action == "order_jukebox":
+            uid = _param("user_id") or api_uid
+            room_type = _param("room_type", "poker")
+            room_id = _param("room_id")
+            track_id = _param("track_id", "track")
+            track_url = _param("track_url") or _param("current_track_url")
+            track_title = _param("track_title") or _param("title")
+            track_artist = _param("track_artist") or _param("artist")
+            ordered_by = _param("ordered_by")
+            res_dict = admin_poker_bot.order_table_jukebox(
+                user_id=uid,
+                room_type=room_type,
+                room_id=room_id,
+                track_id=track_id,
+                track_url=track_url,
+                track_title=track_title,
+                track_artist=track_artist,
+                ordered_by=ordered_by,
+            )
+            status_code = 200
+            if not res_dict.get("ok") and str(res_dict.get("error", "")).startswith("invalid"):
+                status_code = 400
+            out_bytes = json.dumps(res_dict, ensure_ascii=False).encode("utf-8")
+            self._respond(status_code, out_bytes, send_body, "application/json; charset=utf-8", cors)
+            return
+
+        if action == "owl_check":
+            self._respond(200, b'{"ok":true}', send_body, "application/json; charset=utf-8", cors)
+            return
+
+        if not TOKEN:
+            self._respond(503, b'{"ok":false}', send_body, "application/json; charset=utf-8", cors)
+            return
 
         if action == "avatar":
             raw_uid = (qs.get("user_id") or [""])[0].strip()
@@ -703,10 +766,6 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
                 self._respond(502, b'{"ok":false,"result":null}', send_body, "application/json; charset=utf-8", cors)
             return
 
-        if action == "owl_check":
-            self._respond(200, b'{"ok":true}', send_body, "application/json; charset=utf-8", cors)
-            return
-
         self._respond(404, b'{"ok":false}', send_body, "application/json; charset=utf-8", cors)
 
     def do_OPTIONS(self):
@@ -739,7 +798,37 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
             self._respond(404, b"Not Found", False)
 
     def do_POST(self):
-        req_path = self.path.split("?", 1)[0]
+        parts = self.path.split("?", 1)
+        req_path = parts[0]
+        query_str = parts[1] if len(parts) > 1 else ""
+
+        if req_path in ("/api/bot", "/.netlify/functions/bot"):
+            cors = self._cors_headers()
+            raw_len = self.headers.get("Content-Length")
+            if raw_len is None:
+                self._respond(411, b'{"ok":false,"error":"length_required"}', True, "application/json; charset=utf-8", cors)
+                return
+            try:
+                length = int(raw_len)
+            except ValueError:
+                self._respond(400, b'{"ok":false,"error":"bad_length"}', True, "application/json; charset=utf-8", cors)
+                return
+            if length < 0 or length > 32768:
+                self._respond(413 if length > 32768 else 400, b'{"ok":false,"error":"payload_invalid"}', True, "application/json; charset=utf-8", cors)
+                return
+            body_dict = {}
+            if length > 0:
+                raw_body = self.rfile.read(length)
+                try:
+                    parsed = json.loads(raw_body.decode("utf-8"))
+                    if isinstance(parsed, dict):
+                        body_dict = parsed
+                except Exception:
+                    self._respond(400, b'{"ok":false,"error":"invalid_json"}', True, "application/json; charset=utf-8", cors)
+                    return
+            self._handle_bot_api(query_str, True, body_data=body_dict)
+            return
+
         if req_path != _expected_webhook_path():
             self.close_connection = True
             self._respond(404, b"Not Found", True)

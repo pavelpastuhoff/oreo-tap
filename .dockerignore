@@ -52,3 +52,11 @@ crashes_*.txt
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Frontend static audio assets (hosted exclusively on GitHub Pages, never on Render)
+assets/music/
+assets/music/**
+*.mp3
+*.m4a
+*.ogg
+*.wav
