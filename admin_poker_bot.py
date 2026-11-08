@@ -2,6 +2,7 @@
 
 Интегрируется с bot.py и Firebase Realtime Database.
 """
+import asyncio
 from datetime import datetime, timezone
 import html
 import json
@@ -11,11 +12,13 @@ import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 
-MY_USER_ID = int(os.getenv("ADMIN_USER_ID") or "594228143")
+ADMIN_ID = int(os.getenv("ADMIN_ID") or os.getenv("ADMIN_USER_ID") or "594228143")
+MY_USER_ID = ADMIN_ID
 FIREBASE_DB_URL = (
     os.getenv("FIREBASE_DB_URL")
     or "https://oreo-tap-default-rtdb.europe-west1.firebasedatabase.app"
@@ -204,26 +207,325 @@ def get_player(uid: str) -> dict:
     }
 
 
-def register_bot_user(user: dict):
-    if not user or not user.get("id"):
+class BotWasBlocked(Exception):
+    """Исключение при блокировке бота пользователем (403 Forbidden) или удалении аккаунта."""
+
+
+USERS_REGISTRY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users_registry.json")
+_REGISTRY_LOCK = threading.Lock()
+_API_SEEN_CHAT_IDS = set()
+
+
+def _load_local_registry() -> dict:
+    """Читает локальный реестр chat_id пользователей (резервное хранилище рядом с Firebase)."""
+    if not os.path.isfile(USERS_REGISTRY_FILE):
+        return {}
+    try:
+        with open(USERS_REGISTRY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_local_registry(registry: dict):
+    try:
+        with open(USERS_REGISTRY_FILE, "w", encoding="utf-8") as f:
+            json.dump(registry, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _record_local_chat_id(chat_id: int, active: bool = True, user: dict = None):
+    key = str(chat_id)
+    now_ms = int(time.time() * 1000)
+    with _REGISTRY_LOCK:
+        reg = _load_local_registry()
+        entry = reg.get(key) if isinstance(reg.get(key), dict) else {}
+        entry["chat_id"] = int(chat_id)
+        entry["active"] = bool(active)
+        entry["updatedAt"] = now_ms
+        if user and isinstance(user, dict):
+            if user.get("first_name"):
+                entry["name"] = str(user["first_name"])[:64]
+            if user.get("username") is not None:
+                entry["username"] = str(user.get("username") or "")[:64]
+        reg[key] = entry
+        _save_local_registry(reg)
+
+
+def register_bot_user(user: dict, chat_id=None):
+    """Сохраняет chat_id и профиль пользователя в базу Firebase (players/{uid}) и локальный реестр."""
+    raw_uid = (user or {}).get("id") or chat_id
+    if not raw_uid:
         return
-    uid = str(user["id"])
+    uid = str(raw_uid).strip()
     try:
         safe_uid = _fb_key(uid)
     except ValueError:
         return
-    first_name = str(user.get("first_name") or "Тапер")[:64]
-    username = str(user.get("username") or "")[:64]
+
+    resolved_chat = chat_id if chat_id is not None else raw_uid
+    try:
+        cid_int = int(resolved_chat)
+    except (ValueError, TypeError):
+        cid_int = int(uid) if uid.lstrip("-").isdigit() else None
+
+    if cid_int is not None and cid_int > 0:
+        _record_local_chat_id(cid_int, active=True, user=user)
+        _API_SEEN_CHAT_IDS.add(cid_int)
+
+    first_name = str((user or {}).get("first_name") or "Тапер")[:64]
+    username = str((user or {}).get("username") or "")[:64]
+    now_ms = int(time.time() * 1000)
     existing = fb_get(f"players/{safe_uid}")
     patch = {
         "id": uid,
         "name": first_name,
         "username": username,
-        "lastBotSeen": int(time.time() * 1000),
+        "lastBotSeen": now_ms,
+        "botActive": True,
+        "botBlocked": False,
     }
+    if cid_int is not None and cid_int > 0:
+        patch["chat_id"] = cid_int
     if not isinstance(existing, dict):
-        patch.update({"coins": 0, "gems": 5, "energy": 500, "sticks": 0, "ts": int(time.time() * 1000)})
+        patch.update({"coins": 0, "gems": 5, "energy": 500, "sticks": 0, "ts": now_ms})
     fb_patch(f"players/{safe_uid}", patch)
+
+
+def ensure_chat_id_registered(chat_id, user: dict = None):
+    """Легковесная регистрация chat_id при первом взаимодействии с WebApp/API."""
+    try:
+        cid_int = int(str(chat_id).strip())
+    except (ValueError, TypeError):
+        return
+    if cid_int <= 0 or cid_int in _API_SEEN_CHAT_IDS:
+        return
+    _API_SEEN_CHAT_IDS.add(cid_int)
+    _record_local_chat_id(cid_int, active=True, user=user)
+
+    def _bg_sync():
+        try:
+            safe_uid = _fb_key(str(cid_int))
+            now_ms = int(time.time() * 1000)
+            existing = fb_get(f"players/{safe_uid}")
+            patch = {
+                "id": str(cid_int),
+                "chat_id": cid_int,
+                "lastBotSeen": now_ms,
+            }
+            if not isinstance(existing, dict):
+                patch.update({
+                    "name": str((user or {}).get("first_name") or f"Игрок {cid_int}")[:64],
+                    "username": str((user or {}).get("username") or "")[:64],
+                    "coins": 0,
+                    "gems": 5,
+                    "energy": 500,
+                    "sticks": 0,
+                    "ts": now_ms,
+                    "botActive": True,
+                    "botBlocked": False,
+                })
+            elif existing.get("botActive") is None:
+                patch["botActive"] = True
+                patch["botBlocked"] = False
+            fb_patch(f"players/{safe_uid}", patch)
+        except Exception:
+            pass
+
+    threading.Thread(target=_bg_sync, name=f"RegChatId_{cid_int}", daemon=True).start()
+
+
+def mark_user_inactive(chat_id):
+    """Помечает пользователя как неактивного (заблокировал бота или удалил аккаунт)."""
+    try:
+        cid_int = int(chat_id)
+    except (ValueError, TypeError):
+        return
+    _record_local_chat_id(cid_int, active=False)
+    try:
+        safe_uid = _fb_key(str(cid_int))
+        fb_patch(
+            f"players/{safe_uid}",
+            {
+                "botActive": False,
+                "botBlocked": True,
+                "botBlockedAt": int(time.time() * 1000),
+            },
+        )
+    except Exception:
+        pass
+
+
+def get_broadcast_chat_ids() -> list:
+    """Возвращает список всех активных chat_id из базы Firebase и локального реестра."""
+    chat_ids = []
+    seen = set()
+    blocked_ids = set()
+
+    with _REGISTRY_LOCK:
+        local_reg = _load_local_registry()
+
+    for raw_k, info in local_reg.items():
+        if isinstance(info, dict) and info.get("active") is False:
+            try:
+                blocked_ids.add(int(info.get("chat_id") or raw_k))
+            except (ValueError, TypeError):
+                pass
+
+    raw_players = fb_get("players") or {}
+    if isinstance(raw_players, dict):
+        for uid, pdata in raw_players.items():
+            if not isinstance(pdata, dict):
+                continue
+            raw_cid = pdata.get("chat_id") or pdata.get("chatId") or pdata.get("id") or uid
+            try:
+                cid = int(str(raw_cid).strip())
+            except (ValueError, TypeError):
+                continue
+            if cid <= 0:
+                continue
+            if pdata.get("botBlocked") is True or pdata.get("botActive") is False:
+                blocked_ids.add(cid)
+                continue
+            if cid not in seen and cid not in blocked_ids:
+                seen.add(cid)
+                chat_ids.append(cid)
+
+    for raw_k, info in local_reg.items():
+        if not isinstance(info, dict) or info.get("active") is False:
+            continue
+        try:
+            cid = int(info.get("chat_id") or raw_k)
+        except (ValueError, TypeError):
+            continue
+        if cid > 0 and cid not in seen and cid not in blocked_ids:
+            seen.add(cid)
+            chat_ids.append(cid)
+
+    return chat_ids
+
+
+def _detect_broadcast_parse_mode(text: str) -> str:
+    """Определяет режим форматирования (HTML или Markdown) для рассылки."""
+    if re.search(r"</?(?:b|strong|i|em|u|ins|s|strike|del|a|code|pre|blockquote|tg-spoiler)\b", text, re.IGNORECASE):
+        return "HTML"
+    if re.search(r"(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\([^)]+\))", text):
+        return "Markdown"
+    return "HTML"
+
+
+def build_broadcast_keyboard(webapp_url: str) -> dict:
+    """Формирует Inline-кнопку призыва к действию (Call to Action) со ссылкой на WebApp."""
+    return {
+        "inline_keyboard": [
+            [{"text": "🚀 Залететь в игру", "web_app": {"url": webapp_url}}],
+        ]
+    }
+
+
+def _send_broadcast_to_user(chat_id: int, text: str, parse_mode: str, reply_markup: dict, call_fn):
+    """Отправляет сообщение одному пользователю с обработкой ошибок форматирования и блокировок."""
+    try:
+        res = call_fn(
+            "sendMessage",
+            chat_id=int(chat_id),
+            text=text,
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
+        if isinstance(res, dict) and res.get("ok") is False:
+            raise BotWasBlocked(str(res.get("description") or "Telegram API error"))
+        return res
+    except urllib.error.HTTPError as http_err:
+        err_body = ""
+        try:
+            err_body = http_err.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        lower_body = err_body.lower()
+        # Если ошибка парсинга HTML/Markdown сущностей — отправляем чистым текстом, не помечая юзера заблокированным
+        if http_err.code == 400 and "can't parse entities" in lower_body:
+            res = call_fn(
+                "sendMessage",
+                chat_id=int(chat_id),
+                text=text,
+                disable_web_page_preview=True,
+                reply_markup=reply_markup,
+            )
+            if isinstance(res, dict) and res.get("ok") is False:
+                raise BotWasBlocked(str(res.get("description") or "Telegram API error"))
+            return res
+        if http_err.code in (403, 400, 404) or any(
+            marker in lower_body
+            for marker in ("blocked", "deactivated", "chat not found", "user not found", "peer_id_invalid", "forbidden")
+        ):
+            raise BotWasBlocked(err_body or str(http_err)) from http_err
+        raise
+
+
+async def async_broadcast_messages(text: str, call_fn, webapp_url: str, admin_chat_id: int = None) -> tuple:
+    """Асинхронный цикл рассылки с защитой от FloodWait (asyncio.sleep(0.05)) и обработкой BotWasBlocked."""
+    chat_ids = get_broadcast_chat_ids()
+    reply_markup = build_broadcast_keyboard(webapp_url)
+    parse_mode = _detect_broadcast_parse_mode(text)
+
+    sent_count = 0
+    blocked_count = 0
+
+    for cid in chat_ids:
+        try:
+            _send_broadcast_to_user(cid, text, parse_mode, reply_markup, call_fn)
+            sent_count += 1
+        except (BotWasBlocked, urllib.error.HTTPError, Exception) as err:
+            print(f"[Broadcast {cid}] Ошибка доставки (пользователь помечен неактивным):", _redact_err(err))
+            mark_user_inactive(cid)
+            blocked_count += 1
+        await asyncio.sleep(0.05)
+
+    report_text = f"✅ Рассылка завершена! Доставлено: {sent_count}, Заблокировали бота: {blocked_count}."
+    target_admin_chat = int(admin_chat_id) if admin_chat_id else ADMIN_ID
+    try:
+        call_fn(
+            "sendMessage",
+            chat_id=target_admin_chat,
+            text=report_text,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        print("[Broadcast Report] Не удалось отправить отчёт админу:", _redact_err(e))
+
+    return sent_count, blocked_count
+
+
+def run_broadcast(text: str, call_fn, webapp_url: str, admin_chat_id: int = None) -> tuple:
+    """Запускает асинхронную рассылку из синхронного обработчика."""
+    coro = async_broadcast_messages(text, call_fn, webapp_url, admin_chat_id=admin_chat_id)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        result_box = []
+        err_box = []
+
+        def _runner():
+            try:
+                result_box.append(asyncio.run(coro))
+            except Exception as exc:
+                err_box.append(exc)
+
+        t = threading.Thread(target=_runner, name="OreoBroadcastRunner", daemon=True)
+        t.start()
+        t.join()
+        if err_box:
+            raise err_box[0]
+        return result_box[0] if result_box else (0, 0)
+
+    return asyncio.run(coro)
 
 
 def get_common_bank() -> int:
@@ -1180,15 +1482,38 @@ def handle_admin_or_duel_message(msg: dict, call_fn, send_card_fn, webapp_url: s
     chat_id = (msg.get("chat") or {}).get("id")
     if not chat_id:
         return False
-    user = msg.get("from") or {}
-    user_id = user.get("id", "")
-    text_in = (msg.get("text") or "").strip()
+    user = msg.get("from") or msg.get("from_user") or {}
+    user_id = user.get("id", "") if isinstance(user, dict) else getattr(user, "id", "")
+    text_in = (msg.get("text") or msg.get("caption") or "").strip()
 
-    register_bot_user(user)
+    register_bot_user(user if isinstance(user, dict) else {"id": user_id}, chat_id=chat_id)
     if not _duel_listener_started:
         process_duel_challenges_once(call_fn, webapp_url, min_interval_sec=4.0)
 
     cmd = text_in.split()[0].lower().split("@")[0] if text_in else ""
+
+    if cmd == "/broadcast":
+        _user_states.pop(user_id, None)
+        # Security-чек: команда выполняется ТОЛЬКО если ID отправителя совпадает с ADMIN_ID.
+        # Если вызывает другой юзер — бот полностью игнорирует команду.
+        if not is_admin(user_id):
+            return True
+        broadcast_text = re.sub(r"^/broadcast(?:@\S+)?\s*", "", text_in, count=1, flags=re.IGNORECASE).strip()
+        if not broadcast_text:
+            call_fn(
+                "sendMessage",
+                chat_id=chat_id,
+                text=(
+                    "📢 <b>Массовая рассылка (/broadcast)</b>\n\n"
+                    "Введите текст сообщения после команды:\n"
+                    "<code>/broadcast Привет, таперы! Новое обновление уже в игре 🔥</code>\n\n"
+                    "<i>Поддерживается HTML и Markdown форматирование. Кнопка «🚀 Залететь в игру» добавляется автоматически.</i>"
+                ),
+                parse_mode="HTML",
+            )
+            return True
+        run_broadcast(broadcast_text, call_fn, webapp_url, admin_chat_id=chat_id)
+        return True
 
     if cmd == "/admin" or text_in == "👑 Админ-пульт":
         _user_states.pop(user_id, None)
@@ -1355,7 +1680,7 @@ def handle_admin_or_duel_callback(cb: dict, call_fn, edit_card_fn, webapp_url: s
     user = cb.get("from") or {}
     user_id = user.get("id", "")
 
-    register_bot_user(user)
+    register_bot_user(user, chat_id=chat_id)
     if not _duel_listener_started:
         process_duel_challenges_once(call_fn, webapp_url, min_interval_sec=4.0)
 

@@ -54,6 +54,7 @@ _raw_webhook_secret = os.getenv("WEBHOOK_SECRET")
 WEBHOOK_SECRET = _raw_webhook_secret.strip() if _raw_webhook_secret else None
 
 BOT_USERNAME = os.getenv("BOT_USERNAME") or "oreo_67_bot"
+ADMIN_ID = int(os.getenv("ADMIN_ID") or os.getenv("ADMIN_USER_ID") or str(admin_poker_bot.ADMIN_ID))
 
 
 def _normalize_webapp_base(raw_url: str) -> str:
@@ -390,6 +391,9 @@ def setup_bot_profile():
 def handle_pre_checkout_query(pcq):
     if not isinstance(pcq, dict) or not pcq.get("id"):
         return
+    pcq_user = pcq.get("from") or {}
+    if pcq_user.get("id"):
+        admin_poker_bot.ensure_chat_id_registered(pcq_user.get("id"), user=pcq_user)
     raw_payload = str(pcq.get("invoice_payload") or "")
     payload_prefix = raw_payload.split(":", 1)[0]
     matched_pack = None
@@ -420,6 +424,8 @@ def handle_message(msg):
     chat_id = (msg.get("chat") or {}).get("id")
     if not chat_id:
         return
+    user = msg.get("from") or msg.get("from_user") or {}
+    admin_poker_bot.register_bot_user(user if isinstance(user, dict) else {"id": getattr(user, "id", chat_id)}, chat_id=chat_id)
     if msg.get("successful_payment"):
         call(
             "sendMessage",
@@ -639,6 +645,24 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
 
         qs = urllib.parse.parse_qs(query_str, keep_blank_values=True)
         action = (qs.get("action") or [""])[0].strip()
+
+        api_uid = ((qs.get("user_id") or qs.get("chat_id") or [""])[0]).strip()
+        api_user_dict = None
+        if not re.fullmatch(r"\d{5,15}", api_uid):
+            init_data_raw = (self.headers.get("X-Telegram-Init-Data") or "").strip()
+            if init_data_raw:
+                try:
+                    init_qs = urllib.parse.parse_qs(init_data_raw, keep_blank_values=True)
+                    user_json_str = (init_qs.get("user") or [""])[0]
+                    if user_json_str:
+                        parsed_u = json.loads(user_json_str)
+                        if isinstance(parsed_u, dict) and parsed_u.get("id"):
+                            api_uid = str(parsed_u["id"]).strip()
+                            api_user_dict = parsed_u
+                except Exception:
+                    pass
+        if re.fullmatch(r"\d{5,15}", api_uid):
+            admin_poker_bot.ensure_chat_id_registered(api_uid, user=api_user_dict)
 
         if action == "avatar":
             raw_uid = (qs.get("user_id") or [""])[0].strip()
