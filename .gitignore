@@ -1,4 +1,6 @@
 # --- Локальные директории ---
+.vscode/
+.idea/
 
 # --- Переменные окружения, токены и секреты ---
 .env
@@ -6,6 +8,14 @@
 *.env
 .envrc
 !.env.example
+
+# --- Временные скрипты анализа и отладки (kiro / cline) ---
+_analyze.py
+_section.py
+_patch.py
+_debug.py
+_tmp*.py
+_test*.py
 
 # --- Бэкапы и дампы ---
 *.bak
@@ -16,7 +26,7 @@
 *.sql
 
 # --- Приватные ключи и конфиги Firebase / Google Cloud ---
-*firebase*
+*firebase*secret*
 *secret*
 *token*
 *firebase-adminsdk*.json
@@ -66,3 +76,4 @@ node_modules/
 Thumbs.db
 Desktop.ini
 *.log
+

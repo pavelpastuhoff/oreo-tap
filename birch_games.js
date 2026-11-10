@@ -445,6 +445,7 @@
   let _turnInterval = null;
   let _livePokerState = null;
   let _liveChessState = null;
+  let _liveLotoState  = null;  // Русское Лото (управляется loto_game.js, здесь только глобал)
 
   function ensureGlobalPatchStyles() {
     if (document.getElementById('bgGlobalPatchCss')) return;
@@ -674,10 +675,11 @@
       </div>
       <div class="bg-tabs" id="bgTabs">
         <button class="bg-tab active" data-bgtab="tournament">🃏 Турнир Холдем</button>
-        <button class="bg-tab" data-bgtab="duels">⚔️ Вызвать игрока (Дуэли)</button>
-        <button class="bg-tab" data-bgtab="skincases">🎁 Кейсы скинов</button>
+        <button class="bg-tab" data-bgtab="duels">⚔️ Дуэли</button>
+        <button class="bg-tab" data-bgtab="skincases">🎁 Кейсы</button>
         <button class="bg-tab" data-bgtab="friendly">🪵 Столы 24/7</button>
-        <button class="bg-tab" data-bgtab="admin" id="bgAdminTabBtn" hidden>👑 Админ-консоль</button>
+        <button class="bg-tab" data-bgtab="loto">🎱 Лото</button>
+        <button class="bg-tab" data-bgtab="admin" id="bgAdminTabBtn" hidden>👑 Админ</button>
       </div>
       <div class="bg-body" id="bgBody"></div>
       <div class="bg-ko" id="bgKoAnim">
@@ -742,6 +744,7 @@
     if (!_subView) {
       _livePokerState = null;
       _liveChessState = null;
+      _liveLotoState  = null;
       if (window.OreoMusic && window.OreoMusic.leaveRoom) window.OreoMusic.leaveRoom();
     }
     refreshHeaderWallet();
@@ -772,6 +775,11 @@
     else if (_activeTab === 'duels') renderDuelsTab(body);
     else if (_activeTab === 'skincases') renderSkinCasesTab(body);
     else if (_activeTab === 'friendly') renderFriendlyTablesTab(body);
+    else if (_activeTab === 'loto') {
+      // Лото обслуживается модулем loto_game.js
+      if (window.OreoLoto && window.OreoLoto.renderTab) window.OreoLoto.renderTab(body);
+      else body.innerHTML = '<div style="padding:20px;text-align:center;opacity:.5">🎱 Загрузка Лото...</div>';
+    }
     else if (_activeTab === 'admin' && isAdminUser()) renderAdminConsoleTab(body);
     else renderTournamentTab(body);
   }
@@ -3889,7 +3897,8 @@
         seatEl.querySelector('.bg-sstack').innerHTML = `${chipHtml} ${fmt(s.stack)}`;
         seatEl.querySelector('.bg-sstatus').textContent = s.status || '';
         const dEl = seatEl.querySelector('.bg-dealer');
-        if (dEl) dEl.hidden = tbl.dealerIdx !== idx;
+        // БАГ-ФИХ: строгое сравнение типов — dealerIdx может прийти как строка из Firebase
+        if (dEl) dEl.hidden = Number(tbl.dealerIdx) !== idx;
 
         const betWrap = seatEl.querySelector('.bg-sbet-wrap');
         betWrap.innerHTML = s.bet > 0 ? `<div class="bg-sbet${isShushikSeat ? ' shushik-bet' : ''}">${chipHtml} ${fmt(s.bet)}</div>` : '';
@@ -3945,8 +3954,15 @@
           const disableAllActBtns = () => {
             ctrl.querySelectorAll('button').forEach(b => { b.disabled = true; });
           };
-          ctrl.querySelector('#actFold').onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, 'fold'); };
-          ctrl.querySelector('#actCall').onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, toCall === 0 ? 'check' : 'call'); };
+          // БАГ-ФИХ: явно останавливаем всплытие, чтобы клик по «Пас» не перехватывался соседними кнопками
+          const foldBtn = ctrl.querySelector('#actFold');
+          if (foldBtn) {
+            foldBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, 'fold'); };
+          }
+          const callBtn = ctrl.querySelector('#actCall');
+          if (callBtn) {
+            callBtn.onclick = (e) => { e.stopPropagation(); e.preventDefault(); disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, toCall === 0 ? 'check' : 'call'); };
+          }
           const raiseBtn = ctrl.querySelector('#actRaise');
           if (raiseBtn && canRaise) {
             raiseBtn.onclick = () => { disableAllActBtns(); applyPokerPlayerAction(tableId, me.id, 'raise', slider ? Number(slider.value) : minRaise); };

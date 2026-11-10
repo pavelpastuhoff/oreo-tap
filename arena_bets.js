@@ -9,6 +9,8 @@
   const VIRTUAL_CUSHION = 50000; // Виртуальная подушка +50 000 к каждому исходу только для расчёта кэфа
   const LOCAL_EVENTS_KEY = 'oreo_arena_bets_events_v1';
   const LOCAL_CLAIMED_KEY = 'oreo_arena_bets_claimed_v1';
+  // БАГ-ФИХ: ключ для хранения списка удалённых админом seed-событий
+  const LOCAL_DELETED_SEEDS_KEY = 'oreo_arena_bets_deleted_seeds_v1';
 
   // --- Доступ к глобальной БД и состоянию игрока из index.html ---
   function getBridge() {
@@ -271,9 +273,30 @@
     } catch (_) {}
   }
 
+  // БАГ-ФИХ: Работа со списком удалённых seed-ID чтобы они никогда не воскрешались
+  function getDeletedSeedIds() {
+    try {
+      const raw = localStorage.getItem(LOCAL_DELETED_SEEDS_KEY);
+      const arr = JSON.parse(raw || '[]');
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) { return []; }
+  }
+
+  function markSeedAsDeleted(eventId) {
+    try {
+      const ids = getDeletedSeedIds();
+      if (!ids.includes(eventId)) {
+        ids.push(eventId);
+        localStorage.setItem(LOCAL_DELETED_SEEDS_KEY, JSON.stringify(ids));
+      }
+    } catch (_) {}
+  }
+
   function createDefaultSeedEvents() {
     const now = Date.now();
-    return {
+    // БАГ-ФИХ: не воссоздаём события, которые уже были удалены админом
+    const deletedIds = getDeletedSeedIds();
+    const all = {
       ev_seed_cyber: {
         id: 'ev_seed_cyber',
         icon: '🎮',
@@ -297,6 +320,9 @@
         bets: {}
       }
     };
+    // Убираем удалённые seed-события из результата
+    deletedIds.forEach(id => { delete all[id]; });
+    return all;
   }
 
   // --- Облачная синхронизация через существующий Firebase URL ---
@@ -307,6 +333,11 @@
       if (res.ok) {
         const data = await res.json();
         if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+          // БАГ-ФИХ: фильтруем удалённые seed-события из облачного ответа
+          const deletedIds = getDeletedSeedIds();
+          if (deletedIds.length > 0) {
+            deletedIds.forEach(id => { delete data[id]; });
+          }
           eventsData = data;
           saveLocalEvents(eventsData);
           checkAndProcessMyPayouts();
@@ -632,6 +663,10 @@
   }
 
   async function deleteEventFromCloud(eventId) {
+    // БАГ-ФИХ: если это seed-событие — помечаем как удалённое, чтобы не воскрешалось при следующем открытии
+    if (String(eventId).startsWith('ev_seed_')) {
+      markSeedAsDeleted(eventId);
+    }
     delete eventsData[eventId];
     saveLocalEvents(eventsData);
     try {
@@ -816,7 +851,12 @@
   async function adminRefundEvent(eventId) {
     if (!isAdminUser()) return;
     const ev = eventsData[eventId];
+    // БАГ-ФИХ: строго проверяем что работаем только с конкретным eventId,
+    // и не запускаем повторно если статус уже refunded/resolved
     if (!ev || ev.status === 'resolved' || ev.status === 'refunded') return;
+    // Защита от двойного вызова
+    if (ev._refundInProgress) return;
+    ev._refundInProgress = true;
 
     const stats = computeEventStats(ev);
     const payouts = {};
@@ -1196,6 +1236,13 @@
     bb('open_overlay');
     setPerfOverlay(true);
     updateWalletHeader();
+    // БАГ-ФИХ: гарантируем что кнопки администратора всегда видны при открытии
+    if (isAdminUser()) {
+      const adminBtn = document.getElementById('abAdminToggleBtn');
+      const clearBtn = document.getElementById('abClearArchiveBtn');
+      if (adminBtn) adminBtn.style.display = 'inline-flex';
+      if (clearBtn) clearBtn.style.display = 'inline-flex';
+    }
     renderEventsList(true);
     backdrop.classList.add('ab-open');
     haptic('light');

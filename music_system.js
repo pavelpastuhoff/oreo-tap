@@ -165,6 +165,17 @@
       cover: makeSvgCover('#b71c1c', '#1c0519', '#ffd740', '🔥', 'VIP CYBER'),
       price: 300000,
       exclusive: true
+    },
+    // БАГ-ФИХ: добавлен трек «лил птирик» с корректным encodeURIComponent путём к файлу
+    {
+      id: 'lil_ptiric',
+      title: 'lil ptiric',
+      artist: 'lil ptiric',
+      genre: 'hiphop',
+      audio_url: 'assets/music/' + encodeURIComponent('lil ptiric.m4a'),
+      cover: makeSvgCover('#1a0033', '#0a001a', '#ff80ab', '🐦', 'LIL PTIRIC'),
+      price: 0,
+      freeDefault: true
     }
   ];
 
@@ -328,7 +339,8 @@
   }
 
   function getOwnedTrackIds() {
-    const set = new Set(['tap_lofi']);
+    // БАГ-ФИХ: tap_lofi и lil_ptiric — бесплатные треки, всегда доступны всем игрокам
+    const set = new Set(['tap_lofi', 'lil_ptiric']);
     (_prefs.localOwned || []).forEach(id => { if (id) set.add(String(id)); });
     const b = getBridge();
     const st = b && b.getState ? b.getState() : null;
@@ -814,7 +826,12 @@
 
       stopPreview(false);
       _activeSrcKey = '';
-      applyPlaybackForCurrentState();
+      // БАГ-ФИХ: после покупки сразу включаем трек — выключаем Mute если был, и запускаем воспроизведение
+      if (_muted) {
+        setMuted(false, false);
+      } else {
+        applyPlaybackForCurrentState();
+      }
     } catch (_) {
       toast('⏳ Сервер Render запускается (~15 сек). Попробуйте нажать ещё раз!');
     } finally {

@@ -1059,21 +1059,31 @@
         state.lastLoginDate = today;
         setTimeout(() => showToast('🧊 Заморозка спасла твой стрик и прогресс от сгорания!'), 600);
       } else {
-        // Жёсткое правило Duolingo-ОРЕО: не заходишь — прогресс и стрик сгорают!
-        count = 0;
-        state.count = 0;
-        state.coins = 0;
-        state.lv = { power: 0, auto: 0, crit: 0, critx: 0, combo: 0, energyMax: 0 };
-        state.streakDays = 1;
-        state.lastLoginDate = today;
-        setTimeout(() => {
-          showModal(`
-            <div style="font-size:48px">💀🔥</div>
-            <h3>Прогресс сгорел!</h3>
-            <p>Ты пропустил день входа в <b>ОРЕО</b>! По правилам ударного режима без заморозки весь прогресс тапов и коинов сгорел до нуля.<br><br>Заходи каждый день и держи стрик!</p>
-            <button class="modal-btn primary" onclick="window._closeOreoModal()">Понял, начинаю новый разгон! 🍪</button>
-          `);
-        }, 500);
+        // БАГ-ФИХ: не сжигаем прогресс при штатном входе (Firebase sync) и у новых игроков без прогресса.
+        // Сжигаем только если у игрока реально есть прогресс И дата сохранена валидно (не первый вход).
+        const hasProgress = (state.coins > 0 || state.count > 0 || (state.streakDays || 1) > 1);
+        const isLegitBurn = hasProgress && state.lastLoginDate && state.lastLoginDate !== '' && diffDays > 1 && diffDays < 60;
+        if (isLegitBurn) {
+          // Жёсткое правило Duolingo-ОРЕО: не заходишь — прогресс и стрик сгорают!
+          count = 0;
+          state.count = 0;
+          state.coins = 0;
+          state.lv = { power: 0, auto: 0, crit: 0, critx: 0, combo: 0, energyMax: 0 };
+          state.streakDays = 1;
+          state.lastLoginDate = today;
+          setTimeout(() => {
+            showModal(`
+              <div style="font-size:48px">💀🔥</div>
+              <h3>Прогресс сгорел!</h3>
+              <p>Ты пропустил день входа в <b>ОРЕО</b>! По правилам ударного режима без заморозки весь прогресс тапов и коинов сгорел до нуля.<br><br>Заходи каждый день и держи стрик!</p>
+              <button class="modal-btn primary" onclick="window._closeOreoModal()">Понял, начинаю новый разгон! 🍪</button>
+            `);
+          }, 500);
+        } else {
+          // Новый игрок или синхронизация без прогресса — просто обновляем дату без сжигания
+          state.streakDays = 1;
+          state.lastLoginDate = today;
+        }
       }
     }
   }
@@ -2892,7 +2902,7 @@
       ? `<img src="assets/skins/shushik_badge_star.png" style="width:16px;height:16px;display:block;object-fit:contain" alt="★">`
       : sk.icon;
     return `<div class="u-av-wrap" style="width:${px}px;height:${px}px;--rc:${skinColor(sk)}">
-      <img class="u-av" width="${px}" height="${px}" src="${src}" onerror="this.parentElement.outerHTML=this.dataset.fb" data-fb="${skinMini(sk, px).replace(/"/g, '&quot;')}">
+      <img class="u-av" width="${px}" height="${px}" src="${src}" onerror="if(this.parentElement){this.parentElement.outerHTML=this.dataset.fb;}" data-fb="${skinMini(sk, px).replace(/"/g, '&quot;')}">
       <span class="u-av-skin">${skinBadgeHtml}</span>
     </div>`;
   }
@@ -3223,9 +3233,20 @@
   window.OreoBridge = {
     getState: () => state,
     applyExternalState: (patch) => {
+      // БАГ-ФИХ: сохраняем gems перед Object.assign, чтобы они не обнулились если patch пришёл без gems
+      const prevGems = Math.max(0, Math.round(Number(state.gems) || 0));
       Object.assign(state, patch || {});
       state.coins = roundCoin(state.coins);
-      if (patch && patch.gems !== undefined) state.gems = Math.max(0, Math.round(Number(patch.gems) || 0));
+      // БАГ-ФИХ: применяем gems только если они явно переданы в патче и > 0, иначе восстанавливаем предыдущее значение
+      if (patch && patch.gems !== undefined) {
+        state.gems = Math.max(0, Math.round(Number(patch.gems) || 0));
+        // Если патч принёс gems=0, но до этого было больше — сохраняем старое значение (безопасное слияние)
+        if (state.gems === 0 && prevGems > 0) {
+          state.gems = prevGems;
+        }
+      } else {
+        state.gems = Math.max(prevGems, Math.max(0, Math.round(Number(state.gems) || 0)));
+      }
       if (patch && patch.energy !== undefined) state.energy = Math.max(0, Math.round(Number(patch.energy) || 0));
       if (patch && patch.sticks !== undefined) state.sticks = Math.max(0, Math.round(Number(patch.sticks) || 0));
       if (patch && patch.choppedLogs !== undefined) state.choppedLogs = Math.max(0, Math.round(Number(patch.choppedLogs) || 0));
@@ -3259,5 +3280,6 @@
 <link rel="stylesheet" href="arena_bets.css?v=20261108_s2">
 <script src="arena_bets.js?v=20261108_s2"></script>
 <script src="music_system.js?v=20261108_s2"></script>
+<script src="loto_game.js?v=20261110_s1"></script>
 </body>
 </html>
