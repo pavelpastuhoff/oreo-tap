@@ -372,6 +372,8 @@
   // ══════════════════════════════════════════════════════════════════════════
   //  РЕНДЕР — ЛОББИ
   // ══════════════════════════════════════════════════════════════════════════
+  const fmt = (n) => Number(n || 0).toLocaleString('ru-RU');
+
   function renderLotoTab(body) {
     _lotoBodyEl = body;
     document.getElementById('bgTitle').textContent = '🎱 Русское Лото ОРЕО67';
