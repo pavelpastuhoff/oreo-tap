@@ -5,6 +5,10 @@
 (() => {
   'use strict';
 
+  // ─── БАЗОВЫЕ УТИЛИТЫ (до всех функций модуля) ─────────────────────────────
+  const fmt = (n) => Number(n || 0).toLocaleString('ru-RU');
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
   // ─── КОНСТАНТЫ ────────────────────────────────────────────────────────────
   const LOTO_BASE_BET    = 50000;
   const LOTO_MAX_CARDS   = 3;
@@ -81,10 +85,11 @@
   }
   async function fbPut(path, data) {
     try {
-      await fetch(getDbUrl() + '/' + path + '.json', {
+      var r = await fetch(getDbUrl() + '/' + path + '.json', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
       });
-    } catch (e) {}
+      return r.ok;
+    } catch (e) { return false; }
   }
   async function fbPatch(path, data) {
     try {
@@ -209,8 +214,9 @@
       paid: LOTO_BASE_BET * cardCount, marked: [],
       top_closed: false, mid_closed: false, bot_closed: false, all_closed: false
     };
-    await fbPut(LOTO_FB_ROOT + '/' + roomId, room);
-    _myRoomId = roomId; return roomId;
+    var saved = await fbPut(LOTO_FB_ROOT + '/' + roomId, room);
+    if (!saved) { earnCoins(cost); _myCards = []; toast('⚠️ Не удалось создать комнату, ставка возвращена'); return null; }
+    _myRoomId = roomId; _liveLotoState = room; return roomId;
   }
 
   async function joinLotoRoom(roomId, cardCount) {
@@ -337,11 +343,10 @@
 
   async function quitLotoRoom(roomId) {
     var me = getMe(), refund = 0;
-    var lp = _liveLotoState && _liveLotoState.players && _liveLotoState.players[me.id];
-    if (lp) refund = (lp.paid || 0) + (lp.escrow || 0);
-    await runTx(LOTO_FB_ROOT + '/' + roomId, function(r) {
-      if (!r) return undefined;
+    var tx = await runTx(LOTO_FB_ROOT + '/' + roomId, function(r) {
+      if (!r || r.status !== 'waiting') return undefined;
       var p = r.players && r.players[me.id]; if (!p) return undefined;
+      refund = (p.paid || 0) + (p.escrow || 0);
       r.pot = Math.max(0, (r.pot || 0) - (p.paid || 0)); delete r.players[me.id];
       if (Object.keys(r.players).length === 0) return null;
       if (r.host === me.id) r.host = Object.keys(r.players)[0]; return r;
@@ -372,13 +377,28 @@
   // ══════════════════════════════════════════════════════════════════════════
   //  РЕНДЕР — ЛОББИ
   // ══════════════════════════════════════════════════════════════════════════
-  const fmt = (n) => Number(n || 0).toLocaleString('ru-RU');
+  // Возврат в свою активную/ожидающую комнату (после краша или перезахода)
+  async function restoreMyRoom(body) {
+    var me = getMe(), rooms = await getLotoRooms(), now = Date.now(), found = null;
+    Object.values(rooms || {}).forEach(function(r) {
+      if (!r || !r.players || !r.players[me.id]) return;
+      if (r.status === 'waiting' || (r.status === 'active' && now - (r.startedAt || r.createdAt || 0) < 6 * 3600000)) {
+        if (!found || (r.createdAt || 0) > (found.createdAt || 0)) found = r;
+      }
+    });
+    if (!found || _myRoomId || !body.isConnected) return false;
+    _myRoomId = found.id; _liveLotoState = found;
+    _myCards = found.players[me.id].cards || [];
+    subscribeToRoom(found.id, body); renderLotoGame(body);
+    return true;
+  }
 
   function renderLotoTab(body) {
     _lotoBodyEl = body;
-    document.getElementById('bgTitle').textContent = '🎱 Русское Лото ОРЕО67';
+    var t = document.getElementById('bgTitle'); if (t) t.textContent = '🎱 Русское Лото ОРЕО67';
     if (_myRoomId && _liveLotoState) { renderLotoGame(body); return; }
     renderLotoLobby(body);
+    restoreMyRoom(body).catch(function() {});
   }
 
   function renderLotoLobby(body) {
