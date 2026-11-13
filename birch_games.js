@@ -2031,6 +2031,7 @@
     });
     if (!tx.committed || !tx.snapshot) return;
     const ch = tx.snapshot;
+    if (window.OreoSquads) window.OreoSquads.reportDuel(cid); // MMR сквадов: сервер сверит итог по Firebase
     const bet = Math.max(0, Number(ch.bet) || 0);
     const pot = Math.max(bet * 2, Number(ch.pot) || 0);
     const bonusSticks = Math.max(500, Math.round(pot * 0.05));
@@ -2339,9 +2340,9 @@
 
       const topRawName = topIsBlack ? (m.blackName || 'Ожидание...') : (m.whiteName || 'Соперник');
       const botRawName = topIsBlack ? (m.whiteName || 'Вы') : (m.blackName || 'Вы');
-      body.querySelector('#chessTopName').innerHTML = `${esc(topRawName)}${shushikInlineBadgesHtml(topId, topSkin)}`;
+      body.querySelector('#chessTopName').innerHTML = `${window.OreoSquads ? window.OreoSquads.nameHtml(topId, topRawName) : esc(topRawName)}${shushikInlineBadgesHtml(topId, topSkin)}`;
       body.querySelector('#chessTopSub').textContent = topIsBlack ? 'Чёрные фигуры' : 'Белые фигуры';
-      body.querySelector('#chessBotName').innerHTML = `${esc(botRawName)}${shushikInlineBadgesHtml(botId, botSkin)}`;
+      body.querySelector('#chessBotName').innerHTML = `${window.OreoSquads ? window.OreoSquads.nameHtml(botId, botRawName) : esc(botRawName)}${shushikInlineBadgesHtml(botId, botSkin)}`;
       body.querySelector('#chessBotSub').innerHTML = `${topIsBlack ? 'Белые фигуры' : 'Чёрные фигуры'} • Ставка ${botIsShushik ? `<img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt=""> ` : ''}${fmt(m.bet || 0)} 🪙`;
       body.querySelector('#chessPotChip').innerHTML = `${(topIsShushik || botIsShushik) ? `<img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt=""> ` : ''}Банк: ${fmt(m.pot || 0)} 🪙`;
 
@@ -3890,7 +3891,7 @@
           avaEl.innerHTML = (s.photo ? `<img src="${esc(s.photo)}" alt="">` : `<span>${esc((s.name || 'И')[0])}</span>`) + starBadgeHtml;
         }
 
-        seatEl.querySelector('.bg-sname').textContent = s.name || '';
+        { const _sn = seatEl.querySelector('.bg-sname'); if (window.OreoSquads && s.id && !s.isBot) window.OreoSquads.decorateEl(_sn, s.id, s.name || ''); else _sn.textContent = s.name || ''; }
         const chipHtml = isShushikSeat
           ? `<img class="bg-shushik-chip-ico" src="assets/skins/shushik_token_chip.png" alt="●">`
           : stickSvg(false);

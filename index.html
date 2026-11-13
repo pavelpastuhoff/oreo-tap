@@ -2165,7 +2165,8 @@
     let gain = auto
       ? autoTapGain()
       : tapPower() * comboBonus() * (crit ? critMult() : 1) * (lucky ? 2.5 : 1);
-    gain = Math.max(1, roundCoin(gain));
+    gain = Math.max(1, roundCoin(gain * (window.OreoSquads ? window.OreoSquads.tapMult() : 1))); // бонус сквада
+    if (window.OreoSquads) window.OreoSquads.noteTap(gain);
     addTaps(gain);
 
     if (lucky) sayOreo(true);
@@ -2956,7 +2957,7 @@
       const sk = SKINS[r.skin] || SKINS.classic;
       return `<div class="pod p${i + 1}${r.isMe ? ' me' : ''}">
         <div class="pod-av">${i === 0 ? '<span class="crown">👑</span>' : ''}${userAvatarHtml(r, sk, 54)}</div>
-        <div class="pod-name">${escapeHtml(r.name)}</div>
+        <div class="pod-name">${window.OreoSquads ? window.OreoSquads.nameHtml(r.id, r.name) : escapeHtml(r.name)}</div>
         <div class="pod-score">🪙 ${fmtShort(r.coins)}</div>
         <div class="pod-bar">${medals[i]}</div>
       </div>`;
@@ -2968,7 +2969,7 @@
       const sk = SKINS[r.skin] || SKINS.classic;
       const row = document.createElement('div');
       row.className = 'lb-row' + (r.isMe ? ' me' : '');
-      row.innerHTML = `<div class="lb-rank">${idx + 1}</div>${userAvatarHtml(r, sk, 36)}<div class="lb-name">${escapeHtml(r.name)}</div><div class="lb-score">🪙 ${fmtShort(r.coins)}</div>`;
+      row.innerHTML = `<div class="lb-rank">${idx + 1}</div>${userAvatarHtml(r, sk, 36)}<div class="lb-name">${window.OreoSquads ? window.OreoSquads.nameHtml(r.id, r.name) : escapeHtml(r.name)}</div><div class="lb-score">🪙 ${fmtShort(r.coins)}</div>`;
       body.appendChild(row);
     });
   }
@@ -3276,10 +3277,12 @@
   window.db = OREO_CONFIG.FIREBASE_DB_URL;
 })();
 </script>
-<script src="birch_games.js?v=20261108_s2"></script>
+<script src="birch_games.js?v=20261114_s1"></script>
 <link rel="stylesheet" href="arena_bets.css?v=20261108_s2">
 <script src="arena_bets.js?v=20261108_s2"></script>
 <script src="music_system.js?v=20261108_s2"></script>
-<script src="loto_game.js?v=20261113_s2"></script>
+<link rel="stylesheet" href="squads.css?v=20261114_s1">
+<script src="squads.js?v=20261114_s1"></script>
+<script src="loto_game.js?v=20261114_s1"></script>
 </body>
 </html>

@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 
 import admin_poker_bot
+import squads_backend
 
 def _load_local_dotenv(dotenv_path=None):
     """Загружает переменные из локального файла .env (если он существует), не перезаписывая системное окружение."""
@@ -55,6 +56,10 @@ WEBHOOK_SECRET = _raw_webhook_secret.strip() if _raw_webhook_secret else None
 
 BOT_USERNAME = os.getenv("BOT_USERNAME") or "oreo_67_bot"
 ADMIN_ID = int(os.getenv("ADMIN_ID") or os.getenv("ADMIN_USER_ID") or str(admin_poker_bot.ADMIN_ID))
+
+# Модерация сквадов: False — заявка уходит админу (pending_admin); True — сразу pending_funding.
+# Значение можно менять без деплоя в Firebase: config/squads/SQUAD_AUTO_APPROVE (true/false).
+SQUAD_AUTO_APPROVE = (os.getenv("SQUAD_AUTO_APPROVE") or "False").strip().lower() in ("1", "true", "yes")
 
 
 def _normalize_webapp_base(raw_url: str) -> str:
@@ -449,6 +454,8 @@ def handle_message(msg):
         parts = text_in.split(maxsplit=1)
         if len(parts) > 1:
             ref_param = parts[1].strip()
+            if squads_backend.handle_start(msg, ref_param):
+                return
 
     app_url = build_webapp_url(ref=ref_param)
     ref_link = make_ref_link(user_id)
@@ -470,6 +477,8 @@ def handle_message(msg):
 
 def handle_callback(cb):
     if not isinstance(cb, dict) or not cb.get("id"):
+        return
+    if squads_backend.handle_callback(cb):
         return
     if admin_poker_bot.handle_admin_or_duel_callback(cb, call, edit_card, WEBAPP_URL):
         try:
@@ -670,6 +679,11 @@ class _HealthCheckHandler(http.server.BaseHTTPRequestHandler):
                     pass
         if re.fullmatch(r"\d{5,15}", api_uid):
             admin_poker_bot.ensure_chat_id_registered(api_uid, user=api_user_dict)
+
+        if action.startswith("squad_"):
+            sq_code, sq_res = squads_backend.handle_api(action, payload, self.headers.get("X-Telegram-Init-Data") or "")
+            self._respond(sq_code, json.dumps(sq_res, ensure_ascii=False).encode("utf-8"), send_body, "application/json; charset=utf-8", cors)
+            return
 
         if action == "buy_track":
             uid = _param("user_id") or api_uid
@@ -939,6 +953,8 @@ def main():
     start_healthcheck_server()
     setup_bot_profile()
     admin_poker_bot.start_duel_listener(call, WEBAPP_URL)
+    squads_backend.init(call, ADMIN_ID, BOT_USERNAME, build_webapp_url, TOKEN, SQUAD_AUTO_APPROVE)
+    squads_backend.start_sweeper()
 
     webhook_url = resolve_webhook_url()
     if webhook_url and "--local" not in sys.argv:

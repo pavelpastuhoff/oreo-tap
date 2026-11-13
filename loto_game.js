@@ -512,6 +512,7 @@
         if (_lotoRenderSig !== sig) { _lotoRenderSig = sig; renderLotoGame(body); }
       } else { clearInterval(timer); return; }
       if (data && data.status === 'finished') {
+        if (window.OreoSquads) window.OreoSquads.reportLoto(roomId);
         await claimLotoWinnings(data); clearInterval(timer);
       }
     }, 1300);
@@ -540,8 +541,8 @@
       var isMe = p.id === me.id;
       var flags = (p.top_closed ? '🏆' : '') + (p.mid_closed ? '🥇' : '') + (p.bot_closed ? '✅' : '');
       return '<div class="lt-player' + (isMe ? ' me' : '') + '">' +
-        '<div class="lt-pava">' + esc((p.name || '?')[0]) + '</div>' +
-        '<div><div style="font-weight:800;font-size:11px">' + esc(p.name) + '</div>' +
+        '<div class="lt-pava ' + (window.OreoSquads ? window.OreoSquads.avatarClass(p.id) : '') + '">' + esc((p.name || '?')[0]) + '</div>' +
+        '<div><div style="font-weight:800;font-size:11px">' + (window.OreoSquads ? window.OreoSquads.nameHtml(p.id, p.name) : esc(p.name)) + '</div>' +
         '<div style="font-size:10px;opacity:.6">' + flags + ' ' + ((p.marked || []).length) + '✓</div></div></div>';
     }).join('');
 
